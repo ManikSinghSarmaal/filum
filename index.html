@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Filum helps you gather tangled tasks, sort them gently, and follow one clear thread at a time."
+    />
+    <meta name="theme-color" content="#f5f1e8" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <title>Filum</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div class="thread-bar" role="toolbar" aria-label="Thread controls">
+        <label class="thread-switcher-wrap">
+          <span class="visually-hidden">Open thread</span>
+          <select id="threadSwitcher" aria-label="Open thread"></select>
+        </label>
+        <button id="saveThreadButton" class="ghost-button thread-button" type="button">Save thread</button>
+        <button id="newThreadButton" class="ghost-button thread-button" type="button">Start new thread</button>
+        <span id="threadStatus" class="thread-status" aria-live="polite"></span>
+      </div>
+
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Filum</p>
+          <h1>From a tangle of tasks to one calm thread.</h1>
+          <p class="intro">
+            Named for the Latin word for thread. Collect what is swirling,
+            shape it gently, then move through it one thing at a time.
+          </p>
+        </div>
+        <div class="hero-note">
+          <p>Minimal task triage</p>
+          <p>Local-first storage</p>
+          <p>Optional installable PWA</p>
+        </div>
+      </header>
+
+      <nav class="stepper" aria-label="Progress">
+        <button class="step is-active" data-step-target="capture">Gather</button>
+        <button class="step" data-step-target="tangle">See The Knot</button>
+        <button class="step" data-step-target="plan">Order</button>
+        <button class="step" data-step-target="line">Follow The Thread</button>
+      </nav>
+
+      <main>
+        <section class="panel is-active" data-step="capture">
+          <div class="panel-header">
+            <div>
+              <p class="section-label">Step 1</p>
+              <h2>Gather your tasks</h2>
+            </div>
+            <button id="resetButton" class="ghost-button" type="button">Reset</button>
+          </div>
+
+          <form id="taskForm" class="task-form">
+            <label>
+              <span>Task</span>
+              <input
+                id="taskTitle"
+                name="taskTitle"
+                type="text"
+                maxlength="120"
+                placeholder="Finish project summary"
+                required
+              />
+            </label>
+
+            <div class="field-grid">
+              <label>
+                <span>Urgency</span>
+                <select id="taskUrgency" name="taskUrgency">
+                  <option value="">Skip</option>
+                  <option value="Quiet">Quiet</option>
+                  <option value="Soon">Soon</option>
+                  <option value="Now">Now</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Energy</span>
+                <select id="taskEnergy" name="taskEnergy">
+                  <option value="">Skip</option>
+                  <option value="Light">Light</option>
+                  <option value="Steady">Steady</option>
+                  <option value="Deep">Deep</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Type</span>
+                <select id="taskType" name="taskType">
+                  <option value="">Skip</option>
+                  <option value="Admin">Admin</option>
+                  <option value="Creative">Creative</option>
+                  <option value="Errand">Errand</option>
+                  <option value="Thinking">Thinking</option>
+                </select>
+              </label>
+            </div>
+
+            <label>
+              <span>Notes or custom triage</span>
+              <textarea
+                id="taskNotes"
+                name="taskNotes"
+                rows="3"
+                maxlength="220"
+                placeholder="Can wait until afternoon, blocked by review, 20 minutes, call someone first..."
+              ></textarea>
+            </label>
+
+            <div class="form-actions">
+              <button class="primary-button" type="submit">Add task</button>
+              <button id="finishAggregationButton" class="secondary-button" type="button">
+                Complete aggregation
+              </button>
+            </div>
+          </form>
+
+          <aside class="capture-aside">
+            <div class="mini-thread-wrap">
+              <svg id="miniThreadSvg" viewBox="0 0 220 180" role="img" aria-labelledby="miniThreadTitle miniThreadDesc">
+                <title id="miniThreadTitle">A small preview of your thread</title>
+                <desc id="miniThreadDesc">Each circle is a task you have gathered; the rightmost is the most recent.</desc>
+              </svg>
+            </div>
+            <div class="capture-meta">
+              <p>Current capture</p>
+              <strong id="taskCount">0 tasks</strong>
+            </div>
+            <div id="taskPreviewList" class="task-preview-list" aria-live="polite"></div>
+          </aside>
+        </section>
+
+        <section class="panel" data-step="tangle">
+          <div class="panel-header">
+            <div>
+              <p class="section-label">Step 2</p>
+              <h2>Your knot, all in one place</h2>
+            </div>
+            <button id="toPlanButton" class="primary-button" type="button">Start ordering</button>
+          </div>
+
+          <div class="viz-card">
+            <div class="viz-copy">
+              <p>
+                Every black node is one task. Move your cursor across the knot
+                to inspect each piece without trying to hold it all in your head.
+              </p>
+            </div>
+            <div class="tangle-stage">
+              <svg id="tangleSvg" viewBox="0 0 640 420" role="img" aria-labelledby="tangleTitle tangleDesc"></svg>
+              <div id="tangleNodes" class="node-layer"></div>
+              <div id="hoverCard" class="hover-card" hidden></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" data-step="plan">
+          <div class="panel-header">
+            <div>
+              <p class="section-label">Step 3</p>
+              <h2>Choose the order</h2>
+            </div>
+            <button id="toLineButton" class="primary-button" type="button">Untangle it</button>
+          </div>
+
+          <div class="plan-copy">
+            <p>
+              Move tasks up or down and give them a rough time if you want. The
+              goal is not perfection. It is a usable sequence.
+            </p>
+          </div>
+          <div id="planningList" class="planning-list"></div>
+        </section>
+
+        <section class="panel" data-step="line">
+          <div class="panel-header">
+            <div>
+              <p class="section-label">Step 4</p>
+              <h2>The clear thread</h2>
+            </div>
+            <div class="focus-nav">
+              <button id="focusPrevButton" class="ghost-button" type="button">Previous task</button>
+              <button id="focusNextButton" class="secondary-button" type="button">Next task</button>
+            </div>
+          </div>
+
+          <div class="focus-card">
+            <p class="focus-label">Do this now</p>
+            <h3 id="focusTitle">Nothing yet</h3>
+            <p id="focusMeta" class="focus-meta"></p>
+            <p id="focusNotes" class="focus-notes"></p>
+          </div>
+
+          <div class="linear-stage">
+            <svg id="lineSvg" viewBox="0 0 640 220" role="img" aria-labelledby="lineTitle lineDesc"></svg>
+            <div id="linearList" class="linear-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
