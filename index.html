@@ -16,11 +16,17 @@
   <body>
     <div class="app-shell">
       <div class="thread-bar" role="toolbar" aria-label="Thread controls">
-        <label class="thread-switcher-wrap">
-          <span class="visually-hidden">Open thread</span>
-          <select id="threadSwitcher" aria-label="Open thread"></select>
-        </label>
-        <button id="saveThreadButton" class="ghost-button thread-button" type="button">Save thread</button>
+        <div class="thread-menu">
+          <button id="threadMenuButton" class="ghost-button thread-button thread-menu-button" type="button"
+                  aria-haspopup="listbox" aria-expanded="false" aria-controls="threadMenu">
+            <span id="threadMenuLabel" class="thread-menu-label">Untitled thread</span>
+            <span class="thread-menu-caret" aria-hidden="true">▾</span>
+          </button>
+          <input id="threadNameInput" class="thread-name-input" type="text" maxlength="80" hidden
+                 aria-label="Rename this thread" />
+          <div id="threadMenu" class="thread-menu-pop" role="listbox" aria-label="Saved threads" hidden></div>
+        </div>
+        <button id="saveThreadButton" class="ghost-button thread-button" type="button">Rename</button>
         <button id="newThreadButton" class="ghost-button thread-button" type="button">Start new thread</button>
         <span id="threadStatus" class="thread-status" aria-live="polite"></span>
       </div>

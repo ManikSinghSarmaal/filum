@@ -29,6 +29,7 @@ let captureImages = []; // images staged for the next captured task
 let editingTaskId = null; // task currently being edited in place (null = none)
 let editingImages = []; // working copy of that task's images while editing
 let untangleToken = 0; // bumped to cancel any in-flight untangle animation
+let threadMenuOpen = false; // is the saved-threads dropdown open?
 
 // Option lists for the in-place editor's selects, kept in sync with the
 // capture form in index.html.
@@ -72,7 +73,10 @@ const elements = {
   focusEditor: document.getElementById("focusEditor"),
   stepButtons: Array.from(document.querySelectorAll(".step")),
   panels: Array.from(document.querySelectorAll(".panel")),
-  threadSwitcher: document.getElementById("threadSwitcher"),
+  threadMenuButton: document.getElementById("threadMenuButton"),
+  threadMenuLabel: document.getElementById("threadMenuLabel"),
+  threadMenu: document.getElementById("threadMenu"),
+  threadNameInput: document.getElementById("threadNameInput"),
   saveThreadButton: document.getElementById("saveThreadButton"),
   newThreadButton: document.getElementById("newThreadButton"),
   threadStatus: document.getElementById("threadStatus"),
@@ -131,7 +135,7 @@ async function bootstrap() {
     hydrate(loadOfflineMirror());
     setStatus("Working offline — server not reachable");
   }
-  populateThreadSwitcher();
+  renderThreadMenu();
   render();
 }
 
@@ -204,6 +208,9 @@ function bindEvents() {
 
   if (elements.linePanel) {
     elements.linePanel.addEventListener("keydown", (event) => {
+      // Never hijack arrows while editing — they belong to the inline editor's
+      // fields and selects, not task navigation.
+      if (editingTaskId !== null || event.target.closest(".inline-editor")) return;
       if (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA") return;
       if (event.key === "ArrowRight") {
         event.preventDefault();
@@ -257,25 +264,39 @@ function bindEvents() {
     });
   }
 
-  if (elements.threadSwitcher) {
-    elements.threadSwitcher.addEventListener("change", async (event) => {
-      const nextId = event.target.value;
-      if (!nextId || nextId === state.threadId) return;
-      await flushPersistImmediate();
-      try {
-        const thread = await storage.loadThread(nextId);
-        hydrate(thread);
-        setStatus(`Opened · ${formatTime(thread.updatedAt)}`);
-        render();
-      } catch (err) {
-        console.warn("[filum] switch failed:", err);
-        setStatus("Could not open thread");
+  if (elements.threadMenuButton) {
+    elements.threadMenuButton.addEventListener("click", toggleThreadMenu);
+  }
+  if (elements.threadMenu) {
+    elements.threadMenu.addEventListener("click", (event) => {
+      const row = event.target.closest("[data-thread-id]");
+      if (row) openThreadById(row.dataset.threadId);
+    });
+    elements.threadMenu.addEventListener("keydown", handleThreadMenuKeydown);
+  }
+  // Close the dropdown on an outside click or Escape.
+  document.addEventListener("click", (event) => {
+    if (threadMenuOpen && !event.target.closest(".thread-menu")) closeThreadMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && threadMenuOpen) closeThreadMenu();
+  });
+
+  if (elements.threadNameInput) {
+    elements.threadNameInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commitRename();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelRename();
       }
     });
+    elements.threadNameInput.addEventListener("blur", commitRename);
   }
 
   if (elements.saveThreadButton) {
-    elements.saveThreadButton.addEventListener("click", handleSaveThread);
+    elements.saveThreadButton.addEventListener("click", startRename);
   }
   if (elements.newThreadButton) {
     elements.newThreadButton.addEventListener("click", handleNewThread);
@@ -338,6 +359,7 @@ function setFocusIndex(index) {
   markDirty();
   renderLine();
   renderLineThread();
+  bindInlineEditor(); // re-wire the editor if it re-rendered for the new focus
 }
 
 function nextFocusTask() {
@@ -366,21 +388,146 @@ function setStep(step) {
   }
 }
 
-async function handleSaveThread() {
-  const proposed = window.prompt("Name this thread", state.threadName);
-  if (proposed === null) return;
-  const trimmed = proposed.trim() || "Untitled thread";
+// ---- Saved-threads dropdown ---------------------------------------------
+
+function toggleThreadMenu() {
+  if (threadMenuOpen) closeThreadMenu();
+  else openThreadMenu();
+}
+
+async function openThreadMenu() {
+  if (!elements.threadMenu) return;
+  threadMenuOpen = true;
+  elements.threadMenu.hidden = false;
+  if (elements.threadMenuButton) elements.threadMenuButton.setAttribute("aria-expanded", "true");
+  renderThreadMenu(); // show what we already have, then refresh from disk
+  await refreshThreadList();
+  const first = elements.threadMenu.querySelector(".thread-menu-row");
+  if (first) first.focus();
+}
+
+function closeThreadMenu() {
+  if (!threadMenuOpen) return;
+  threadMenuOpen = false;
+  const hadFocusInside =
+    elements.threadMenu && elements.threadMenu.contains(document.activeElement);
+  if (elements.threadMenu) elements.threadMenu.hidden = true;
+  if (elements.threadMenuButton) {
+    elements.threadMenuButton.setAttribute("aria-expanded", "false");
+    if (hadFocusInside) elements.threadMenuButton.focus();
+  }
+}
+
+function handleThreadMenuKeydown(event) {
+  const rows = Array.from(elements.threadMenu.querySelectorAll(".thread-menu-row"));
+  if (!rows.length) return;
+  const idx = rows.indexOf(document.activeElement);
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    rows[Math.min(rows.length - 1, idx + 1)].focus();
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    rows[Math.max(0, idx - 1)].focus();
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    rows[0].focus();
+  } else if (event.key === "End") {
+    event.preventDefault();
+    rows[rows.length - 1].focus();
+  }
+}
+
+// Build the dropdown rows from the directory listing. The open thread is always
+// represented (even if the listing hasn't caught it yet) and marked.
+function renderThreadMenu() {
+  if (elements.threadMenuLabel) {
+    elements.threadMenuLabel.textContent = state.threadName || "Untitled thread";
+  }
+  if (!elements.threadMenu) return;
+  const current = state.threadId;
+
+  const items = threadList.slice();
+  if (current && !items.some((t) => t.id === current)) {
+    items.unshift({ id: current, name: state.threadName, updatedAt: new Date().toISOString() });
+  }
+  const others = items.filter((t) => t.id !== current);
+
+  if (!others.length) {
+    elements.threadMenu.innerHTML = `<p class="thread-menu-empty">${
+      isOffline ? "Threads list when the server is running." : "No other saved threads yet."
+    }</p>`;
+    return;
+  }
+
+  elements.threadMenu.innerHTML = items
+    .map((thread) => {
+      const isCurrent = thread.id === current;
+      const name = thread.name || "Untitled thread";
+      const when = isCurrent ? "open now" : formatTime(thread.updatedAt);
+      return `
+        <button class="thread-menu-row ${isCurrent ? "is-current" : ""}" type="button" role="option"
+          data-thread-id="${escapeHtml(thread.id)}" ${isCurrent ? 'aria-current="true"' : ""}>
+          <span class="thread-menu-row-name">${escapeHtml(name)}</span>
+          <span class="thread-menu-row-time">${escapeHtml(when)}</span>
+        </button>`;
+    })
+    .join("");
+}
+
+// Open a saved thread, saving the current one in its present state first.
+async function openThreadById(id) {
+  if (!id || id === state.threadId) {
+    closeThreadMenu();
+    return;
+  }
+  closeThreadMenu();
+  await flushPersistImmediate();
+  try {
+    const thread = await storage.loadThread(id);
+    hydrate(thread);
+    setStatus(`Opened · ${formatTime(thread.updatedAt)}`);
+    render();
+  } catch (err) {
+    console.warn("[filum] open failed:", err);
+    setStatus("Could not open thread");
+  }
+}
+
+// ---- Inline rename (replaces the old window.prompt) ----------------------
+
+function startRename() {
+  if (!elements.threadNameInput) return;
+  closeThreadMenu();
+  elements.threadNameInput.value = state.threadName || "";
+  elements.threadNameInput.hidden = false;
+  if (elements.threadMenuButton) elements.threadMenuButton.hidden = true;
+  elements.threadNameInput.focus();
+  elements.threadNameInput.select();
+}
+
+async function commitRename() {
+  if (!elements.threadNameInput || elements.threadNameInput.hidden) return;
+  const trimmed = elements.threadNameInput.value.trim() || "Untitled thread";
+  hideRenameInput(); // hide first so the resulting blur is a no-op
   state.threadName = trimmed;
+  if (elements.threadMenuLabel) elements.threadMenuLabel.textContent = trimmed;
   await flushPersistImmediate();
   await refreshThreadList();
   setStatus(`Saved as “${trimmed}”`);
 }
 
+function cancelRename() {
+  hideRenameInput();
+}
+
+function hideRenameInput() {
+  if (!elements.threadNameInput) return;
+  elements.threadNameInput.hidden = true;
+  if (elements.threadMenuButton) elements.threadMenuButton.hidden = false;
+}
+
 async function handleNewThread() {
-  if (isDirty) {
-    const wantSave = window.confirm("Save current thread before starting a new one?");
-    if (wantSave) await flushPersistImmediate();
-  }
+  await flushPersistImmediate(); // autosave already persists; save current silently
   try {
     const thread = await storage.createThread("Untitled thread", emptyStateObject());
     hydrate(thread);
@@ -396,27 +543,13 @@ async function handleNewThread() {
 async function refreshThreadList() {
   try {
     threadList = await storage.listThreads();
-    populateThreadSwitcher();
+    isOffline = false;
+    renderThreadMenu();
   } catch (err) {
     console.warn("[filum] list failed:", err);
+    isOffline = true;
+    renderThreadMenu();
   }
-}
-
-function populateThreadSwitcher() {
-  if (!elements.threadSwitcher) return;
-  const select = elements.threadSwitcher;
-  const current = state.threadId;
-  select.innerHTML = "";
-  if (!threadList.some((t) => t.id === current) && current) {
-    threadList.unshift({ id: current, name: state.threadName, updatedAt: new Date().toISOString() });
-  }
-  threadList.forEach((thread) => {
-    const option = document.createElement("option");
-    option.value = thread.id;
-    option.textContent = thread.name || "Untitled thread";
-    if (thread.id === current) option.selected = true;
-    select.appendChild(option);
-  });
 }
 
 function markDirty() {
@@ -541,6 +674,9 @@ function render() {
   renderVisuals();
   renderLine();
   bindInlineEditor();
+  if (elements.threadMenuLabel) {
+    elements.threadMenuLabel.textContent = state.threadName || "Untitled thread";
+  }
 }
 
 function renderStepState() {
@@ -757,6 +893,7 @@ function moveTask(taskId, direction) {
   renderPlanningList();
   renderVisuals();
   renderLine();
+  bindInlineEditor(); // re-wire the editor if reordering re-rendered it
 }
 
 function renderVisuals() {
@@ -1276,6 +1413,10 @@ function removeEditingTask() {
 function bindInlineEditor() {
   const form = document.querySelector(".inline-editor[data-editor]");
   if (!form) return;
+  // Each render rebuilds the form node; guard so a node is only wired once even
+  // if bindInlineEditor runs more than once for the same render.
+  if (form.dataset.bound === "1") return;
+  form.dataset.bound = "1";
 
   const tray = form.querySelector(".ie-attachments");
   const renderTray = () => {
