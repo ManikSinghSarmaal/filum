@@ -8,6 +8,10 @@ Filum gives you a flow:
 
 It is useful when you have too many competing tasks and need a calm, local, minimal way to convert them into a sequence.
 
+## A quick look
+
+![Filum — Step 1: gather your tasks while a thread quietly tangles alongside them](assets/images/demo.png)
+
 ## Requirements
 
 You need:
