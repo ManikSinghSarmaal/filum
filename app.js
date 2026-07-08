@@ -1298,7 +1298,7 @@ function renderInlineEditor(task) {
     <form class="inline-editor" data-editor novalidate>
       <label class="inline-field">
         <span>Task</span>
-        <input class="ie-title" type="text" maxlength="120" value="${escapeHtml(task.title)}" required />
+        <input class="ie-title" type="text" maxlength="720" value="${escapeHtml(task.title)}" required />
       </label>
       <div class="inline-grid">
         <label class="inline-field">
@@ -1316,7 +1316,7 @@ function renderInlineEditor(task) {
       </div>
       <label class="inline-field">
         <span>Notes or custom triage</span>
-        <textarea class="ie-notes" rows="4" maxlength="2000" placeholder="Context, links, references — drop it all here. Paste an image straight in.">${escapeHtml(task.notes)}</textarea>
+        <textarea class="ie-notes" rows="4" maxlength="10000" placeholder="Context, links, references — drop it all here. Paste an image straight in.">${escapeHtml(task.notes)}</textarea>
       </label>
       <div class="inline-attach-row">
         <button type="button" class="ghost-button attach-button ie-add-image">Add image</button>
