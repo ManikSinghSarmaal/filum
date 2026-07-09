@@ -28,6 +28,11 @@
         </div>
         <button id="saveThreadButton" class="ghost-button thread-button" type="button">Rename</button>
         <button id="newThreadButton" class="ghost-button thread-button" type="button">Start new thread</button>
+        <div class="prefs-menu">
+          <button id="prefsButton" class="ghost-button thread-button" type="button"
+                  aria-haspopup="true" aria-expanded="false" aria-controls="prefsPanel">Preferences</button>
+          <div id="prefsPanel" class="thread-menu-pop prefs-pop" aria-label="Preferences" hidden></div>
+        </div>
         <span id="threadStatus" class="thread-status" aria-live="polite"></span>
       </div>
 
@@ -41,7 +46,7 @@
           </p>
         </div>
         <div class="hero-note">
-          <p>Minimal task triage</p>
+          <p>Writing-first capture</p>
           <p>Local-first storage</p>
         </div>
       </header>
@@ -53,6 +58,13 @@
       </nav>
 
       <main>
+        <div id="findBar" class="find-bar" hidden>
+          <input id="findInput" type="text" maxlength="120" autocomplete="off"
+                 placeholder="Find a knot — wrap in /slashes/ for a pattern"
+                 aria-label="Find within this thread" />
+          <div id="findResults" class="find-results" role="listbox" aria-label="Matching knots"></div>
+        </div>
+
         <section class="panel is-active" data-step="capture">
           <div class="panel-header">
             <div>
@@ -75,54 +87,21 @@
               />
             </label>
 
-            <div class="field-grid">
-              <label>
-                <span>Urgency</span>
-                <select id="taskUrgency" name="taskUrgency">
-                  <option value="">Skip</option>
-                  <option value="Quiet">Quiet</option>
-                  <option value="Soon">Soon</option>
-                  <option value="Now">Now</option>
-                </select>
-              </label>
-
-              <label>
-                <span>Energy</span>
-                <select id="taskEnergy" name="taskEnergy">
-                  <option value="">Skip</option>
-                  <option value="Light">Light</option>
-                  <option value="Steady">Steady</option>
-                  <option value="Deep">Deep</option>
-                </select>
-              </label>
-
-              <label>
-                <span>Type</span>
-                <select id="taskType" name="taskType">
-                  <option value="">Skip</option>
-                  <option value="Admin">Admin</option>
-                  <option value="Creative">Creative</option>
-                  <option value="Errand">Errand</option>
-                  <option value="Thinking">Thinking</option>
-                </select>
-              </label>
-            </div>
-
             <label>
-              <span>Notes or custom triage</span>
+              <span>Notes</span>
               <textarea
                 id="taskNotes"
                 name="taskNotes"
-                rows="5"
+                rows="6"
                 maxlength="10000"
-                placeholder="Dump context here(or you can organise it as well you've OCD :p) it could be anything(literally anything) like a link to the doc, who to call, images, emails, audio, pdf, whatever babe! Just bring it on and test filum's limits!!!"
+                placeholder="Context, links, references — drop what helps here. Paste an image straight in. Start a line with note: to mark it for later."
               ></textarea>
             </label>
 
             <div class="attach-row">
               <button id="captureAddImageButton" class="ghost-button attach-button" type="button">Add image</button>
               <input id="captureImageInput" class="visually-hidden" type="file" accept="image/*" multiple />
-              <small class="field-hint">Links can be hyperlinked, your context always remains to you only!</small>
+              <small class="field-hint">Everything stays in files on your own disk.</small>
             </div>
             <div id="captureAttachments" class="attachment-tray" aria-live="polite"></div>
 
@@ -137,8 +116,8 @@
           <aside class="capture-aside">
             <div class="mini-thread-wrap">
               <svg id="miniThreadSvg" viewBox="0 0 220 180" role="img" aria-labelledby="miniThreadTitle miniThreadDesc">
-                <title id="miniThreadTitle">preview of your developed knot</title>
-                <desc id="miniThreadDesc">Each dark node acts for the task you gathered before; the thread grows more absurdly(yes, ABSURDLY!) as you add more tasks.</desc>
+                <title id="miniThreadTitle">A small preview of your knot</title>
+                <desc id="miniThreadDesc">Each dark node stands for a task you gathered; the thread knots tighter as you add more.</desc>
               </svg>
             </div>
             <div class="capture-meta">
@@ -155,12 +134,15 @@
               <p class="section-label">Step 2</p>
               <h2>Choose the order</h2>
             </div>
-            <button id="toLineButton" class="primary-button" type="button">Untangle it</button>
+            <div class="panel-header-actions">
+              <button id="findPlanButton" class="ghost-button" type="button" hidden>Find</button>
+              <button id="toLineButton" class="primary-button" type="button">Untangle it</button>
+            </div>
           </div>
 
           <div class="plan-copy">
             <p>
-              Move tasks up or down and give them a rough time if you want. The
+              Move tasks up or down, or pull one somewhere else by its handle. The
               goal is not perfection. It is a usable sequence.
             </p>
           </div>
@@ -174,26 +156,31 @@
               <h2>The clear thread</h2>
             </div>
             <div class="focus-nav">
+              <button id="findLineButton" class="ghost-button" type="button" hidden>Find</button>
+              <button id="retrospectButton" class="ghost-button" type="button" hidden aria-pressed="false">Retrospect</button>
               <button id="focusPrevButton" class="ghost-button" type="button">Previous task</button>
               <button id="focusNextButton" class="secondary-button" type="button">Next task</button>
             </div>
           </div>
 
+          <div class="linear-stage">
+            <svg id="lineSvg" viewBox="0 0 640 150" role="img" aria-labelledby="lineTitle lineDesc"></svg>
+          </div>
+          <div id="linearList" class="linear-list"></div>
+
           <div class="focus-card">
             <div class="focus-card-head">
               <p class="focus-label">Do this now</p>
-              <button id="focusEditButton" class="ghost-button mini-edit" type="button" hidden>Edit</button>
+              <span class="focus-card-actions">
+                <button id="focusDoneButton" class="ghost-button mini-edit" type="button" hidden>Mark done</button>
+                <button id="focusEditButton" class="ghost-button mini-edit" type="button" hidden>Edit</button>
+              </span>
             </div>
             <h3 id="focusTitle">Nothing yet</h3>
-            <p id="focusMeta" class="focus-meta"></p>
             <div id="focusNotes" class="focus-notes"></div>
             <div id="focusAttachments" class="attachment-tray attachment-tray--read"></div>
+            <button id="focusArchiveButton" class="ghost-button" type="button" hidden>Archive this thread</button>
             <div id="focusEditor" class="focus-editor" hidden></div>
-          </div>
-
-          <div class="linear-stage">
-            <svg id="lineSvg" viewBox="0 0 640 220" role="img" aria-labelledby="lineTitle lineDesc"></svg>
-            <div id="linearList" class="linear-list"></div>
           </div>
         </section>
       </main>

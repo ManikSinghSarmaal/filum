@@ -8,9 +8,14 @@
   --line-strong: rgba(22, 22, 22, 0.78);
   --accent: #e7dfd0;
   --accent-strong: #d8ccb7;
-  /* A calm, desaturated blue — used only for genuine links. See
-     new_features/PRD.md §9 for why this single exception to the no-blue rule. */
+  /* A calm, desaturated blue — used only for genuine links. See the
+     "One blue, for links only" entry in design.md's drift log. */
   --link: #3f5d8a;
+  /* A muted violet — used only for alias-prefixed note lines. See the
+     "One violet, for note labels only" entry in design.md's drift log.
+     The shade is user-configurable; app.js overrides this at runtime. */
+  --note-label: #6f5f80;
+  --code-bg: rgba(22, 22, 22, 0.05);
   --shadow: 0 24px 60px rgba(18, 18, 18, 0.08);
   --radius-xl: 28px;
   --radius-lg: 20px;
@@ -34,6 +39,10 @@ body {
     radial-gradient(circle at right center, rgba(231, 223, 208, 0.85), transparent 26%),
     linear-gradient(180deg, #f8f4ed 0%, var(--bg) 100%);
   color: var(--ink);
+}
+
+body.is-plan-dragging {
+  user-select: none;
 }
 
 button,
@@ -61,11 +70,11 @@ textarea {
   padding: 24px 0 56px;
 }
 
-/* ---- Thread bar (Save / New / switcher) ----------------------------- */
+/* ---- Thread bar (switcher / rename / new / preferences) -------------- */
 
 .thread-bar {
   position: relative;
-  z-index: 30; /* lift the bar (and its dropdown) above the hero + panels */
+  z-index: 30; /* lift the bar (and its pop-downs) above the hero + panels */
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -131,9 +140,9 @@ textarea {
   left: 0;
   z-index: 1;
   width: max-content;
-  min-width: 220px;
+  min-width: 240px;
   max-width: calc(100vw - 32px);
-  max-height: 320px;
+  max-height: 360px;
   overflow-y: auto;
   padding: 6px;
   border: 1px solid var(--line);
@@ -201,6 +210,117 @@ textarea {
   text-align: center;
 }
 
+/* Archived / bin listings: a row with a quiet trailing action. */
+.thread-menu-row--split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 10px;
+  transition: background-color 180ms ease;
+}
+
+.thread-menu-row--split:hover {
+  background: rgba(231, 223, 208, 0.35);
+}
+
+.thread-menu-row-open {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.thread-menu-row-open:focus-visible {
+  outline: 2px solid var(--line-strong);
+  outline-offset: -2px;
+}
+
+.thread-menu-row--split.is-binned {
+  padding: 9px 6px 9px 12px;
+}
+
+.thread-menu-row--split.is-binned .thread-menu-row-name {
+  color: var(--muted);
+}
+
+.thread-menu-row-action {
+  flex: none;
+  margin-right: 4px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 180ms ease, border-color 180ms ease;
+}
+
+.thread-menu-row-action:hover,
+.thread-menu-row-action:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  outline: none;
+}
+
+.thread-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.thread-menu-head-label {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-size: 0.95rem;
+}
+
+.thread-menu-footer {
+  display: grid;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.thread-menu-action {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.thread-menu-action:hover,
+.thread-menu-action:focus-visible {
+  background: rgba(231, 223, 208, 0.5);
+  color: var(--ink);
+  outline: none;
+}
+
+.thread-menu-head .thread-menu-action {
+  width: auto;
+  flex: none;
+}
+
 .thread-button {
   padding: 6px 14px;
   font-size: 0.82rem;
@@ -213,6 +333,74 @@ textarea {
   color: var(--muted);
   opacity: 0.85;
   transition: opacity 180ms ease;
+}
+
+/* ---- Preferences pop-down ------------------------------------------- */
+
+.prefs-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.prefs-pop {
+  left: auto;
+  right: 0;
+  width: 300px;
+  padding: 14px;
+}
+
+.prefs-field {
+  margin-bottom: 16px;
+}
+
+.prefs-field:last-child {
+  margin-bottom: 4px;
+}
+
+.prefs-field label,
+.prefs-field > span {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.prefs-field input[type="text"] {
+  padding: 9px 12px;
+  border-radius: 10px;
+}
+
+.prefs-swatches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prefs-swatch {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--swatch);
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease;
+}
+
+.prefs-swatch:hover {
+  transform: translateY(-1px);
+}
+
+.prefs-swatch.is-current {
+  border-color: var(--line-strong);
+  outline: 2px solid rgba(22, 22, 22, 0.18);
+  outline-offset: 2px;
+}
+
+#prefsColor {
+  width: 96px;
 }
 
 /* ---- Hero ----------------------------------------------------------- */
@@ -279,7 +467,6 @@ h3 {
 .intro,
 .viz-copy p,
 .plan-copy p,
-.focus-meta,
 .focus-notes,
 .capture-meta p,
 .hero-note p {
@@ -372,8 +559,7 @@ h3 {
 .capture-meta,
 .form-actions,
 .plan-item-head,
-.focus-card,
-.linear-item-meta {
+.focus-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -382,6 +568,13 @@ h3 {
 
 .panel-header {
   margin-bottom: 24px;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 /* Step 1 layout: form on the left, capture aside on the right. */
@@ -398,8 +591,7 @@ h3 {
 .viz-card,
 .plan-copy,
 .planning-list,
-.focus-card,
-.linear-stage {
+.focus-card {
   padding: 20px;
 }
 
@@ -418,17 +610,19 @@ h3 {
   grid-column: 1 / -1;
 }
 
-.task-form label,
-.plan-time-label {
+.task-form label {
   display: block;
 }
 
-.task-form label span,
-.plan-time-label span {
+.task-form label span {
   display: block;
   margin-bottom: 10px;
   font-size: 0.95rem;
   font-weight: 600;
+}
+
+.task-form label + label {
+  margin-top: 16px;
 }
 
 input,
@@ -454,24 +648,12 @@ textarea:focus {
   outline-offset: 2px;
 }
 
-input.is-invalid {
-  border-color: rgba(168, 92, 70, 0.6);
-  background: rgba(255, 245, 240, 0.8);
-}
-
 .field-hint {
   display: block;
   margin-top: 6px;
   color: var(--muted);
   font-size: 0.75rem;
   letter-spacing: 0.02em;
-}
-
-.field-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin: 16px 0;
 }
 
 .form-actions {
@@ -494,6 +676,13 @@ input.is-invalid {
   border: 1px solid var(--line);
 }
 
+/* A ghost button acting as a pressed toggle (the Retrospect view). */
+.ghost-button.is-active {
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
 .primary-button:hover,
 .secondary-button:hover,
 .ghost-button:hover,
@@ -507,6 +696,81 @@ input.is-invalid {
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+}
+
+/* ---- Find within the thread ----------------------------------------- */
+
+.find-bar {
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  animation: rise 200ms ease;
+}
+
+.find-bar[hidden] {
+  display: none;
+}
+
+.find-bar input {
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+
+.find-results {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.find-result {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 180ms ease;
+}
+
+.find-result:hover,
+.find-result:focus-visible,
+.find-result.is-active {
+  background: rgba(231, 223, 208, 0.5);
+  outline: none;
+}
+
+.find-result-title {
+  display: block;
+}
+
+.find-result-snippet {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* Matches are emphasized, never highlighted — calm over loud. */
+mark.find-hit {
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.find-hint {
+  margin: 8px 0 0;
+  padding: 4px 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 /* ---- Capture aside (Step 1 right column) ---------------------------- */
@@ -580,7 +844,6 @@ input.is-invalid {
 }
 
 .task-chip strong,
-.hover-card strong,
 .plan-item strong,
 .linear-item strong {
   display: block;
@@ -588,7 +851,6 @@ input.is-invalid {
 }
 
 .task-chip p,
-.hover-card p,
 .plan-item p,
 .linear-item p,
 .focus-notes {
@@ -605,23 +867,7 @@ input.is-invalid {
   text-align: center;
 }
 
-/* ---- Visualizations ------------------------------------------------- */
-
-.linear-stage {
-  position: relative;
-  border-radius: 24px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 241, 230, 0.88)),
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.8), transparent 56%);
-}
-
-#lineSvg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-/* ---- Step 3 planning list ------------------------------------------ */
+/* ---- Step 2 planning list ------------------------------------------ */
 
 .planning-list {
   padding: 0;
@@ -630,13 +876,57 @@ input.is-invalid {
 
 .plan-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.plan-item-head {
+  align-items: flex-start;
+}
+
+/* The drag handle: a quiet dotted strip, CSS-drawn — no glyphs. Dragging
+   is recorded in design.md's drift log; up/down stay as the keyboard path. */
+.drag-handle {
+  width: 20px;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background-color: transparent;
+  background-image: radial-gradient(rgba(22, 22, 22, 0.3) 1.1px, transparent 1.4px);
+  background-size: 6px 9px;
+  background-position: center;
+  cursor: grab;
+  touch-action: none;
+  opacity: 0.55;
+  transition: opacity 180ms ease;
+}
+
+.drag-handle:hover {
+  opacity: 0.9;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.plan-item.is-dragging {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+  opacity: 0.92;
+  position: relative;
+  z-index: 2;
+}
+
+/* A knot just found via search — a state, not a flash. */
+.plan-item.is-found {
+  border-color: var(--line-strong);
 }
 
 .plan-controls {
   display: flex;
   gap: 8px;
+  flex: none;
 }
 
 .mini-button {
@@ -664,20 +954,120 @@ input.is-invalid {
   cursor: not-allowed;
 }
 
-.plan-side {
-  min-width: 130px;
+/* ---- Step 3: thread on top, symmetric rail, focus card below -------- */
+
+.linear-stage {
+  border-radius: 24px;
+  padding: 10px 12px 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 241, 230, 0.88)),
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.8), transparent 56%);
 }
 
-.plan-time-label input {
-  margin-top: 0;
+#lineSvg {
+  width: 100%;
+  height: auto;
+  display: block;
 }
 
-/* ---- Step 4 focus thread ------------------------------------------- */
+.line-dot {
+  cursor: pointer;
+}
+
+/* The rail: equal-height cards in one row, scrollable when the thread is
+   long. The current knot is emphasized by border and shadow, not by motion. */
+.linear-list {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(170px, 1fr);
+  align-items: stretch;
+  overflow-x: auto;
+  padding: 6px 4px 14px;
+  margin: 10px 0 18px;
+  scroll-snap-type: x proximity;
+  transition: opacity 320ms ease;
+}
+
+.linear-item {
+  min-height: 96px;
+  padding: 14px;
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition:
+    opacity 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+}
+
+.linear-item strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.linear-item p {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.linear-item:hover {
+  border-color: var(--line-strong);
+}
+
+.linear-item:focus-visible {
+  outline: 2px solid var(--line-strong);
+  outline-offset: 2px;
+}
+
+.linear-item.is-muted {
+  opacity: 0.42;
+}
+
+.linear-item.is-current {
+  border-color: rgba(22, 22, 22, 0.28);
+  box-shadow: 0 14px 28px rgba(17, 17, 17, 0.1);
+}
+
+/* Completed knots, visible only while looking back. */
+.linear-item.is-done {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.linear-item.is-done strong {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--line-strong);
+}
+
+.linear-restore {
+  margin-top: 10px;
+}
+
+.linear-item-index {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* During the untangle, the rail and focus card hold back, then fade in as
+   the thread settles into place. */
+.is-untangling .linear-list {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---- Step 3 focus card ---------------------------------------------- */
 
 .focus-card {
   flex-direction: column;
   align-items: flex-start;
-  margin-bottom: 18px;
 }
 
 .focus-card h3,
@@ -691,60 +1081,6 @@ input.is-invalid {
   flex-wrap: wrap;
 }
 
-.linear-stage {
-  min-height: 220px;
-  overflow: hidden;
-}
-
-.linear-list {
-  position: absolute;
-  inset: 0;
-  padding: 22px;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  align-items: end;
-  pointer-events: none;
-}
-
-.linear-item {
-  align-self: end;
-  pointer-events: auto;
-  cursor: pointer;
-  transition:
-    transform 180ms ease,
-    opacity 180ms ease,
-    box-shadow 180ms ease,
-    border-color 180ms ease;
-}
-
-.linear-item:hover {
-  border-color: var(--line-strong);
-  transform: translateY(-2px);
-}
-
-.linear-item:focus-visible {
-  outline: 2px solid var(--line-strong);
-  outline-offset: 2px;
-}
-
-.linear-item.is-muted {
-  opacity: 0.42;
-}
-
-.linear-item.is-current {
-  transform: translateY(-10px);
-  border-color: rgba(22, 22, 22, 0.24);
-  box-shadow: 0 18px 34px rgba(17, 17, 17, 0.08);
-}
-
-.linear-item-index {
-  margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 0.86rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
 .focus-card-head {
   display: flex;
   width: 100%;
@@ -753,12 +1089,58 @@ input.is-invalid {
   gap: 12px;
 }
 
+.focus-card-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
 .focus-notes {
   margin-top: 4px;
+  width: 100%;
 }
 
 .focus-notes-empty {
   color: var(--muted);
+}
+
+/* ---- Rich notes markup ---------------------------------------------- */
+
+/* Alias-prefixed lines ("note: …") — the one violet in the product. */
+.note-line {
+  color: var(--note-label);
+}
+
+.note-code {
+  margin: 10px 0;
+  padding: 12px 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--ink);
+}
+
+.note-code-inline {
+  padding: 1px 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.note-list {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.note-list li {
+  margin: 2px 0;
 }
 
 /* ---- Edit affordance, links, attachments --------------------------- */
@@ -774,7 +1156,7 @@ input.is-invalid {
   margin-bottom: 0;
 }
 
-/* Quiet inline "Edit" / "Close" control. */
+/* Quiet inline "Edit" / "Mark done" control. */
 .mini-edit {
   flex: none;
   padding: 4px 12px;
@@ -782,7 +1164,7 @@ input.is-invalid {
   border-radius: 999px;
 }
 
-/* Links inside notes — the one place colour is allowed. */
+/* Links inside notes — the one place blue is allowed. */
 .rich-link {
   color: var(--link);
   text-decoration: underline;
@@ -829,7 +1211,7 @@ input.is-invalid {
   color: var(--muted);
 }
 
-/* Editable attachment tray (capture form + edit modal). */
+/* Editable attachment tray (capture form + inline editor). */
 .attach-row {
   display: flex;
   align-items: center;
@@ -934,8 +1316,7 @@ input.is-invalid {
   margin-bottom: 12px;
 }
 
-.inline-field > span,
-.inline-time > span {
+.inline-field > span {
   display: block;
   margin-bottom: 8px;
   font-size: 0.82rem;
@@ -944,17 +1325,9 @@ input.is-invalid {
 }
 
 .inline-editor input,
-.inline-editor select,
 .inline-editor textarea {
   border-radius: 12px;
   padding: 10px 12px;
-}
-
-.inline-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
 }
 
 .inline-attach-row {
@@ -962,12 +1335,6 @@ input.is-invalid {
   align-items: flex-end;
   gap: 12px;
   flex-wrap: wrap;
-}
-
-.inline-time {
-  display: block;
-  flex: 1 1 120px;
-  max-width: 180px;
 }
 
 .inline-actions {
@@ -990,6 +1357,35 @@ input.is-invalid {
   padding: 8px 16px;
 }
 
+/* The focus-card variant: a calm editor. The title is a quiet serif line;
+   the notes area is the page. It opens exactly where the read view was. */
+.inline-editor--focus {
+  padding: 4px 0 0;
+  border: 0;
+  background: transparent;
+}
+
+.inline-editor--focus .ie-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-size: 1.45rem;
+  line-height: 1.2;
+  padding: 6px 2px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.inline-editor--focus .ie-title:focus {
+  outline: none;
+  border-bottom-color: var(--line-strong);
+}
+
+.inline-editor--focus .ie-notes {
+  min-height: min(44vh, 480px);
+  line-height: 1.65;
+}
+
 /* When a task is in edit mode, its read-view box gives the editor full room. */
 .task-chip--editing,
 .plan-item--editing {
@@ -1005,17 +1401,6 @@ input.is-invalid {
 
 .focus-editor[hidden] {
   display: none;
-}
-
-/* During the untangle, the ordered cards are held back, then fade in over the
-   thread as it settles into place. */
-.linear-list {
-  transition: opacity 320ms ease;
-}
-
-.is-untangling .linear-list {
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* ---- Empty states & helpers ---------------------------------------- */
@@ -1051,11 +1436,6 @@ input.is-invalid {
     grid-template-columns: 1fr;
   }
 
-  .field-grid,
-  .plan-item {
-    grid-template-columns: 1fr;
-  }
-
   .panel {
     padding: 20px;
   }
@@ -1086,45 +1466,13 @@ input.is-invalid {
     margin-left: 0;
   }
 
-  /* Step 4 list becomes a horizontal scroll-snap rail with a soft fade hint. */
-  .linear-stage {
-    overflow: hidden;
+  .plan-item-head {
+    flex-wrap: wrap;
   }
 
   .linear-list {
-    position: static;
-    grid-auto-flow: column;
-    grid-template-columns: none;
-    grid-auto-columns: minmax(180px, 70%);
-    overflow-x: auto;
-    overflow-y: hidden;
+    grid-auto-columns: minmax(160px, 78%);
     scroll-snap-type: x mandatory;
-    align-items: stretch;
-    padding: 14px;
-  }
-
-  .linear-item {
-    scroll-snap-align: start;
-  }
-
-  .linear-stage::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 48px;
-    pointer-events: none;
-    background: linear-gradient(90deg, rgba(247, 241, 230, 0), rgba(247, 241, 230, 0.9));
-    display: block;
-  }
-
-  .inline-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .inline-actions {
-    align-items: stretch;
   }
 }
 
