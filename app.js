@@ -15,6 +15,13 @@ const prefersReducedMotion =
 // Preset shades for the note-label keyword — all muted, cream-compatible.
 // The violet is a scoped colour exception recorded in design.md's drift log.
 const NOTE_SHADES = ["#6f5f80", "#7d6890", "#615671"];
+const INTERFACE_CONTRASTS = new Set(["soft", "balanced", "rich"]);
+const INTERFACE_SPACING = new Set(["compact", "calm", "open"]);
+const INTERFACE_MOTION = new Set(["full", "quiet", "none"]);
+
+function shouldReduceInterfaceMotion() {
+  return prefersReducedMotion || appSettings?.interfaceMotion !== "full";
+}
 
 const state = {
   threadId: null,
@@ -22,6 +29,8 @@ const state = {
   tasks: [],
   currentStep: DEFAULT_STEP,
   focusIndex: 0,
+  circumspectionContext: emptyCircumspectionContext(),
+  navigationContext: emptyNavigationContext(),
 };
 
 let threadList = [];
@@ -51,6 +60,7 @@ let findRestoreFocus = null;
 
 let appSettings = defaultSettings();
 let noteLabelRegex = null;
+let settingsPersistVersion = 0;
 
 const elements = {
   taskForm: document.getElementById("taskForm"),
@@ -163,6 +173,7 @@ const storage = {
   },
 };
 
+installCircumspectionBridge();
 bootstrap();
 registerServiceWorker();
 
@@ -207,6 +218,8 @@ function hydrate(thread) {
   state.tasks = Array.isArray(incoming.tasks) ? incoming.tasks.map(normalizeTask) : [];
   state.currentStep = steps.includes(incoming.currentStep) ? incoming.currentStep : DEFAULT_STEP;
   state.focusIndex = Number.isInteger(incoming.focusIndex) ? incoming.focusIndex : 0;
+  state.circumspectionContext = normalizeCircumspectionContext(incoming.circumspectionContext);
+  state.navigationContext = normalizeNavigationContext(incoming.navigationContext);
   if (state.focusIndex >= state.tasks.length) {
     state.focusIndex = Math.max(0, state.tasks.length - 1);
   }
@@ -220,7 +233,146 @@ function hydrate(thread) {
 }
 
 function emptyStateObject() {
-  return { tasks: [], currentStep: DEFAULT_STEP, focusIndex: 0 };
+  return {
+    tasks: [],
+    currentStep: DEFAULT_STEP,
+    focusIndex: 0,
+    circumspectionContext: emptyCircumspectionContext(),
+    navigationContext: emptyNavigationContext(),
+  };
+}
+
+function emptyCircumspectionContext() {
+  return {
+    lastEntryId: null,
+    lastVisitedAt: null,
+    lastMeaningfulCircumspectionAction: null,
+    lastCircumspectionMode: null,
+  };
+}
+
+function emptyNavigationContext() {
+  return {
+    lastMeaningfulSurface: null,
+    lastMeaningfulAction: null,
+    updatedAt: null,
+  };
+}
+
+function contextString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeCircumspectionContext(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return {
+    ...source,
+    lastEntryId: contextString(source.lastEntryId),
+    lastVisitedAt: contextString(source.lastVisitedAt),
+    lastMeaningfulCircumspectionAction: contextString(source.lastMeaningfulCircumspectionAction),
+    lastCircumspectionMode: contextString(source.lastCircumspectionMode),
+  };
+}
+
+function normalizeNavigationContext(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const surface =
+    source.lastMeaningfulSurface === "outer" || source.lastMeaningfulSurface === "circumspection"
+      ? source.lastMeaningfulSurface
+      : null;
+  return {
+    ...source,
+    lastMeaningfulSurface: surface,
+    lastMeaningfulAction: contextString(source.lastMeaningfulAction),
+    updatedAt: contextString(source.updatedAt),
+  };
+}
+
+// Circumspection owns its writing store and preferences. Filum only keeps the
+// small amount of per-thread navigation memory needed to route the doorway and
+// restore the outer surface. Keeping that seam here avoids either dimension
+// reaching into the other's private state.
+function installCircumspectionBridge() {
+  if (typeof window === "undefined") return;
+  window.FilumCircumspectionBridge = {
+    getThreadSnapshot,
+    getContextSnapshot,
+    updateContext: updateCircumspectionContext,
+    flushThread: flushPersistImmediate,
+    captureOuterSnapshot,
+  };
+}
+
+function getContextSnapshot() {
+  return cloneSerializable({
+    threadId: state.threadId,
+    threadName: state.threadName,
+    circumspectionContext: normalizeCircumspectionContext(state.circumspectionContext),
+    navigationContext: normalizeNavigationContext(state.navigationContext),
+  });
+}
+
+function cloneSerializable(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getThreadSnapshot() {
+  return cloneSerializable({
+    threadId: state.threadId,
+    threadName: state.threadName,
+    scope: openScope,
+    threadMissing,
+    ...serializeThreadState(),
+  });
+}
+
+function updateCircumspectionContext(update = {}) {
+  const source = update && typeof update === "object" ? update : {};
+  const now = new Date().toISOString();
+  const next = normalizeCircumspectionContext(state.circumspectionContext);
+
+  if (Object.prototype.hasOwnProperty.call(source, "entryId")) {
+    next.lastEntryId = contextString(source.entryId);
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "mode")) {
+    next.lastCircumspectionMode = contextString(source.mode);
+  }
+  next.lastVisitedAt = now;
+
+  if (source.meaningful === true) {
+    const action = contextString(source.action) || "circumspection";
+    next.lastMeaningfulCircumspectionAction = action;
+    state.navigationContext = {
+      ...normalizeNavigationContext(state.navigationContext),
+      lastMeaningfulSurface: "circumspection",
+      lastMeaningfulAction: action,
+      updatedAt: now,
+    };
+  }
+
+  state.circumspectionContext = next;
+  // Deliberately use the surface-neutral dirty path. Otherwise saving a diary
+  // pointer would immediately rewrite its navigation surface back to outer.
+  markDirty();
+  return cloneSerializable({
+    circumspectionContext: state.circumspectionContext,
+    navigationContext: state.navigationContext,
+  });
+}
+
+function captureOuterSnapshot() {
+  const active = document.activeElement;
+  const focusedTask = state.tasks[state.focusIndex] || null;
+  return {
+    threadId: state.threadId,
+    currentStep: state.currentStep,
+    focusIndex: state.focusIndex,
+    focusedTaskId: focusedTask ? focusedTask.id : null,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    activeElementId: active instanceof HTMLElement && active.id ? active.id : null,
+    capturedAt: new Date().toISOString(),
+  };
 }
 
 // Back-fill any fields that older thread files predate, so every task the rest
@@ -290,7 +442,7 @@ function setFocusByTaskId(taskId) {
   if (index < 0 || state.tasks[index].done) return;
   if (index === state.focusIndex) return;
   state.focusIndex = index;
-  markDirty();
+  markOuterMeaningful("focus-task");
   renderLine();
   renderLineThread();
   bindInlineEditor(); // re-wire the editor if it re-rendered for the new focus
@@ -322,7 +474,7 @@ function completeFocusedTask() {
   task.done = true;
   task.completedAt = new Date().toISOString();
   normalizeFocus();
-  markDirty();
+  markOuterMeaningful("complete-task");
   // No message, no celebration — the loosening thread is the acknowledgment.
   render();
 }
@@ -333,7 +485,7 @@ function restoreTask(taskId) {
   task.done = false;
   task.completedAt = null;
   normalizeFocus();
-  markDirty();
+  markOuterMeaningful("restore-task");
   render();
 }
 
@@ -564,7 +716,7 @@ function handleAddTask(event) {
   captureImages = [];
   renderCaptureAttachments();
   elements.taskTitle.focus();
-  markDirty();
+  markOuterMeaningful("add-task");
   render();
 }
 
@@ -577,7 +729,7 @@ function resetState() {
   editingImages = [];
   retrospectOn = false;
   renderCaptureAttachments();
-  markDirty();
+  markOuterMeaningful("reset-thread");
   render();
 }
 
@@ -591,8 +743,10 @@ function setStep(step) {
     untangleToken += 1;
   }
   closeFind();
+  const previousStep = state.currentStep;
   state.currentStep = steps.includes(step) ? step : DEFAULT_STEP;
-  markDirty();
+  if (state.currentStep !== previousStep) markOuterMeaningful("change-step");
+  else markDirty();
   render();
 }
 
@@ -849,6 +1003,7 @@ async function openThreadById(id) {
 async function archiveCurrentThread() {
   if (!state.threadId) return;
   closeThreadMenu();
+  markOuterMeaningful("archive-thread");
   await flushPersistImmediate();
   if (isDirty || threadMissing) {
     // The pre-move save did not land; moving now would archive a stale file.
@@ -868,6 +1023,7 @@ async function archiveCurrentThread() {
 async function binCurrentThread() {
   if (!state.threadId) return;
   closeThreadMenu();
+  markOuterMeaningful("bin-thread");
   await flushPersistImmediate();
   if (threadMissing) return; // already gone from disk; nothing to bin
   if (isDirty) {
@@ -899,9 +1055,11 @@ function startRename() {
 async function commitRename() {
   if (!elements.threadNameInput || elements.threadNameInput.hidden) return;
   const trimmed = elements.threadNameInput.value.trim() || "Untitled thread";
+  const changed = trimmed !== state.threadName;
   hideRenameInput(); // hide first so the resulting blur is a no-op
   state.threadName = trimmed;
   if (elements.threadMenuLabel) elements.threadMenuLabel.textContent = trimmed;
+  if (changed) markOuterMeaningful("rename-thread");
   await flushPersistImmediate();
   await refreshThreadList();
   setStatus(`Saved as “${trimmed}”`);
@@ -956,6 +1114,27 @@ function markDirty() {
   schedulePersist();
 }
 
+function markOuterMeaningful(action) {
+  const now = new Date().toISOString();
+  state.navigationContext = {
+    ...normalizeNavigationContext(state.navigationContext),
+    lastMeaningfulSurface: "outer",
+    lastMeaningfulAction: contextString(action) || "outer-change",
+    updatedAt: now,
+  };
+  markDirty();
+}
+
+function serializeThreadState() {
+  return {
+    tasks: state.tasks,
+    currentStep: state.currentStep,
+    focusIndex: state.focusIndex,
+    circumspectionContext: normalizeCircumspectionContext(state.circumspectionContext),
+    navigationContext: normalizeNavigationContext(state.navigationContext),
+  };
+}
+
 function schedulePersist() {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(flushPersistImmediate, PERSIST_DEBOUNCE_MS);
@@ -976,7 +1155,7 @@ async function flushPersistImmediate() {
   const thread = {
     id: state.threadId,
     name: state.threadName,
-    state: { tasks: state.tasks, currentStep: state.currentStep, focusIndex: state.focusIndex },
+    state: serializeThreadState(),
   };
   try {
     const saved = await storage.saveThread(thread);
@@ -1012,7 +1191,7 @@ function flushPersistOnUnload() {
   saveOfflineMirror();
   const body = JSON.stringify({
     name: state.threadName,
-    state: { tasks: state.tasks, currentStep: state.currentStep, focusIndex: state.focusIndex },
+    state: serializeThreadState(),
   });
   // keepalive PUT is the reliable cross-browser path for unload writes.
   try {
@@ -1029,14 +1208,13 @@ function flushPersistOnUnload() {
 
 function saveOfflineMirror() {
   try {
+    const threadState = serializeThreadState();
     localStorage.setItem(
       LOCAL_MIRROR_KEY,
       JSON.stringify({
         threadId: state.threadId,
         threadName: state.threadName,
-        tasks: state.tasks,
-        currentStep: state.currentStep,
-        focusIndex: state.focusIndex,
+        ...threadState,
         mirroredAt: new Date().toISOString(),
       })
     );
@@ -1057,6 +1235,8 @@ function loadOfflineMirror() {
         tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
         currentStep: parsed.currentStep || DEFAULT_STEP,
         focusIndex: parsed.focusIndex || 0,
+        circumspectionContext: normalizeCircumspectionContext(parsed.circumspectionContext),
+        navigationContext: normalizeNavigationContext(parsed.navigationContext),
       },
     };
   } catch {
@@ -1278,7 +1458,7 @@ function moveTaskToVisibleIndex(taskId, newVisibleIndex) {
     if (fi >= 0) state.focusIndex = fi;
   }
   normalizeFocus();
-  markDirty();
+  markOuterMeaningful("reorder-task");
   renderPlanningList();
   renderVisuals();
   renderLine();
@@ -1296,7 +1476,7 @@ function bindPlanDrag() {
   let drag = null;
 
   const flipMove = (items, mutate) => {
-    if (prefersReducedMotion) {
+    if (shouldReduceInterfaceMotion()) {
       mutate();
       return;
     }
@@ -1545,7 +1725,7 @@ function playRetrospect() {
   const svg = elements.lineSvg;
   const all = state.tasks;
   const done = all.map((task, index) => ({ task, index })).filter((entry) => entry.task.done);
-  if (!svg || prefersReducedMotion || !done.length) {
+  if (!svg || shouldReduceInterfaceMotion() || !done.length) {
     renderLineThread();
     return;
   }
@@ -2041,7 +2221,7 @@ function saveEdit(formEl) {
 
   editingTaskId = null;
   editingImages = [];
-  markDirty();
+  markOuterMeaningful("edit-task");
   render();
 }
 
@@ -2064,7 +2244,7 @@ function removeEditingTask() {
   editingTaskId = null;
   editingImages = [];
   normalizeFocus();
-  markDirty();
+  markOuterMeaningful("remove-task");
   render();
 }
 
@@ -2328,7 +2508,7 @@ function selectFindResult(taskId) {
   if (state.currentStep === "capture") setStep("plan");
   const item = elements.planningList.querySelector(`.plan-item[data-task-id="${taskId}"]`);
   if (!item) return;
-  item.scrollIntoView({ block: "center", behavior: prefersReducedMotion ? "auto" : "smooth" });
+  item.scrollIntoView({ block: "center", behavior: shouldReduceInterfaceMotion() ? "auto" : "smooth" });
   item.classList.add("is-found");
   const clear = () => item.classList.remove("is-found");
   setTimeout(() => {
@@ -2340,12 +2520,16 @@ function selectFindResult(taskId) {
 // ---- Settings ----------------------------------------------------------------
 //
 // One settings file on disk (~/.filum/settings.json), mirrored to localStorage
-// for offline starts. The surface is deliberately tiny: note-label aliases and
-// their shade. New settings need a design.md check before they land here.
+// for offline starts. Filum owns the outer interface controls and note-label
+// treatment; Circumspection mounts and persists its own controls separately.
 
 function defaultSettings() {
   return {
     schemaVersion: 1,
+    interfaceContrast: "rich",
+    textScale: 1,
+    spacing: "calm",
+    interfaceMotion: "full",
     noteAliases: ["note"],
     noteColor: NOTE_SHADES[0],
   };
@@ -2354,6 +2538,18 @@ function defaultSettings() {
 function normalizeSettings(raw) {
   const base = defaultSettings();
   if (!raw || typeof raw !== "object") return base;
+  if (INTERFACE_CONTRASTS.has(raw.interfaceContrast)) {
+    base.interfaceContrast = raw.interfaceContrast;
+  }
+  if (typeof raw.textScale === "number" && Number.isFinite(raw.textScale)) {
+    base.textScale = Math.round(Math.min(1.2, Math.max(0.9, raw.textScale)) * 100) / 100;
+  }
+  if (INTERFACE_SPACING.has(raw.spacing)) {
+    base.spacing = raw.spacing;
+  }
+  if (INTERFACE_MOTION.has(raw.interfaceMotion)) {
+    base.interfaceMotion = raw.interfaceMotion;
+  }
   if (Array.isArray(raw.noteAliases)) {
     const aliases = raw.noteAliases
       .filter((a) => typeof a === "string")
@@ -2380,22 +2576,40 @@ async function loadSettingsIntoApp() {
 }
 
 function applySettings() {
-  document.documentElement.style.setProperty("--note-label", appSettings.noteColor);
+  const root = document.documentElement;
+  root.dataset.interfaceContrast = appSettings.interfaceContrast;
+  root.dataset.spacing = appSettings.spacing;
+  root.dataset.interfaceMotion = appSettings.interfaceMotion;
+  root.style.fontSize = `${Math.round(appSettings.textScale * 100)}%`;
+  root.style.setProperty("--note-label", appSettings.noteColor);
   const aliases = appSettings.noteAliases.map(escapeRegex).filter(Boolean);
   noteLabelRegex = aliases.length ? new RegExp(`^\\s*(?:${aliases.join("|")})\\s*:`, "i") : null;
 }
 
-async function persistSettings() {
+async function persistSettings({ renderApp = true } = {}) {
+  appSettings = normalizeSettings(appSettings);
   applySettings();
   saveSettingsMirror();
-  render();
-  if (prefsOpen) renderPrefsPanel();
+  if (renderApp) render();
+  const requested = cloneSerializable(appSettings);
+  const version = ++settingsPersistVersion;
   try {
-    appSettings = normalizeSettings(await storage.saveSettings(appSettings));
+    const saved = normalizeSettings(await storage.saveSettings(requested));
+    if (version !== settingsPersistVersion) return;
+    const changedByServer = JSON.stringify(saved) !== JSON.stringify(requested);
+    appSettings = saved;
+    applySettings();
+    saveSettingsMirror();
+    if (changedByServer) {
+      if (renderApp) render();
+      syncPrefsPanelValues();
+    }
     setStatus("Preferences saved");
   } catch (err) {
     console.warn("[filum] settings save failed, keeping local copy:", err);
-    setStatus("Preferences kept locally — server not reachable");
+    if (version === settingsPersistVersion) {
+      setStatus("Preferences kept locally — server not reachable");
+    }
   }
 }
 
@@ -2426,7 +2640,7 @@ function openPrefsPanel() {
   elements.prefsPanel.hidden = false;
   if (elements.prefsButton) elements.prefsButton.setAttribute("aria-expanded", "true");
   renderPrefsPanel();
-  const first = elements.prefsPanel.querySelector("input");
+  const first = elements.prefsPanel.querySelector("input, select, button");
   if (first) first.focus();
 }
 
@@ -2445,30 +2659,127 @@ function closePrefsPanel() {
 function renderPrefsPanel() {
   if (!elements.prefsPanel) return;
   elements.prefsPanel.innerHTML = `
-    <div class="prefs-field">
-      <label for="prefsAliases">Note keywords</label>
-      <input id="prefsAliases" type="text" maxlength="120" autocomplete="off"
-             value="${escapeHtml(appSettings.noteAliases.join(", "))}" />
-      <small class="field-hint">A line starting with one of these words and a colon is tinted. Separate with commas.</small>
-    </div>
-    <div class="prefs-field">
-      <span>Keyword shade</span>
-      <div class="prefs-swatches">
-        ${NOTE_SHADES.map(
-          (hex) => `
-            <button type="button" class="prefs-swatch ${hex === appSettings.noteColor ? "is-current" : ""}"
-              data-shade="${hex}" style="--swatch:${hex}" aria-label="Use shade ${hex}"></button>`
-        ).join("")}
-        <input id="prefsColor" type="text" maxlength="7" autocomplete="off" aria-label="Keyword shade as hex"
-               value="${escapeHtml(appSettings.noteColor)}" />
+    <section class="prefs-section" aria-labelledby="prefsFilumTitle">
+      <h3 id="prefsFilumTitle" class="prefs-section-title">Filum</h3>
+      <div class="prefs-field">
+        <label for="prefsExposure">Exposure</label>
+        <select id="prefsExposure">
+          <option value="soft" ${appSettings.interfaceContrast === "soft" ? "selected" : ""}>Soft</option>
+          <option value="balanced" ${appSettings.interfaceContrast === "balanced" ? "selected" : ""}>Balanced</option>
+          <option value="rich" ${appSettings.interfaceContrast === "rich" ? "selected" : ""}>Rich</option>
+        </select>
       </div>
-    </div>`;
+      <div class="prefs-field">
+        <label for="prefsTextScale">Text size · <output id="prefsTextScaleOutput" for="prefsTextScale">${Math.round(appSettings.textScale * 100)}%</output></label>
+        <input id="prefsTextScale" type="range" min="90" max="120" step="5"
+               value="${Math.round(appSettings.textScale * 100)}" />
+      </div>
+      <div class="prefs-field">
+        <label for="prefsSpacing">Spacing</label>
+        <select id="prefsSpacing">
+          <option value="compact" ${appSettings.spacing === "compact" ? "selected" : ""}>Compact</option>
+          <option value="calm" ${appSettings.spacing === "calm" ? "selected" : ""}>Calm</option>
+          <option value="open" ${appSettings.spacing === "open" ? "selected" : ""}>Open</option>
+        </select>
+      </div>
+      <div class="prefs-field">
+        <label for="prefsInterfaceMotion">Interface motion</label>
+        <select id="prefsInterfaceMotion">
+          <option value="full" ${appSettings.interfaceMotion === "full" ? "selected" : ""}>Full</option>
+          <option value="quiet" ${appSettings.interfaceMotion === "quiet" ? "selected" : ""}>Quiet</option>
+          <option value="none" ${appSettings.interfaceMotion === "none" ? "selected" : ""}>None</option>
+        </select>
+      </div>
+      <div class="prefs-field">
+        <label for="prefsAliases">Note keywords</label>
+        <input id="prefsAliases" type="text" maxlength="120" autocomplete="off"
+               value="${escapeHtml(appSettings.noteAliases.join(", "))}" />
+        <small class="field-hint">A line starting with one of these words and a colon is tinted. Separate with commas.</small>
+      </div>
+      <div class="prefs-field">
+        <span>Keyword shade</span>
+        <div class="prefs-swatches">
+          ${NOTE_SHADES.map(
+            (hex) => `
+              <button type="button" class="prefs-swatch ${hex === appSettings.noteColor ? "is-current" : ""}"
+                data-shade="${hex}" style="--swatch:${hex}" aria-label="Use shade ${hex}"></button>`
+          ).join("")}
+          <input id="prefsColor" type="text" maxlength="7" autocomplete="off" aria-label="Keyword shade as hex"
+                 value="${escapeHtml(appSettings.noteColor)}" />
+        </div>
+      </div>
+    </section>
+    <div id="circumspectionPrefsMount"></div>`;
   bindPrefsPanel();
+  renderCircumspectionPreferences();
+}
+
+function renderCircumspectionPreferences() {
+  const root = elements.prefsPanel.querySelector("#circumspectionPrefsMount");
+  if (!root || typeof window === "undefined" || typeof CustomEvent !== "function") return;
+  // The listener owns its markup, bindings, values, and persistence. In
+  // particular, Circumspection settings never enter appSettings or the Filum
+  // settings API by accident.
+  window.dispatchEvent(
+    new CustomEvent("filum:circumspection-preferences-render", {
+      detail: { root },
+    })
+  );
 }
 
 function bindPrefsPanel() {
+  const exposureSelect = elements.prefsPanel.querySelector("#prefsExposure");
+  const textScaleInput = elements.prefsPanel.querySelector("#prefsTextScale");
+  const textScaleOutput = elements.prefsPanel.querySelector("#prefsTextScaleOutput");
+  const spacingSelect = elements.prefsPanel.querySelector("#prefsSpacing");
+  const motionSelect = elements.prefsPanel.querySelector("#prefsInterfaceMotion");
   const aliasesInput = elements.prefsPanel.querySelector("#prefsAliases");
   const colorInput = elements.prefsPanel.querySelector("#prefsColor");
+
+  if (exposureSelect) {
+    exposureSelect.addEventListener("change", () => {
+      if (!INTERFACE_CONTRASTS.has(exposureSelect.value)) return;
+      appSettings.interfaceContrast = exposureSelect.value;
+      persistSettings({ renderApp: false });
+    });
+  }
+
+  if (textScaleInput) {
+    const previewTextScale = () => {
+      const percent = Math.min(120, Math.max(90, Number(textScaleInput.value) || 100));
+      appSettings.textScale = Math.round(percent) / 100;
+      if (textScaleOutput) {
+        textScaleOutput.value = `${Math.round(percent)}%`;
+        textScaleOutput.textContent = `${Math.round(percent)}%`;
+      }
+      // Invalidate an older settings response while the range is still being
+      // dragged, then preview without rebuilding the open preferences DOM.
+      settingsPersistVersion += 1;
+      applySettings();
+      saveSettingsMirror();
+    };
+    textScaleInput.addEventListener("input", previewTextScale);
+    textScaleInput.addEventListener("change", () => {
+      previewTextScale();
+      persistSettings({ renderApp: false });
+    });
+  }
+
+  if (spacingSelect) {
+    spacingSelect.addEventListener("change", () => {
+      if (!INTERFACE_SPACING.has(spacingSelect.value)) return;
+      appSettings.spacing = spacingSelect.value;
+      persistSettings({ renderApp: false });
+    });
+  }
+
+  if (motionSelect) {
+    motionSelect.addEventListener("change", () => {
+      if (!INTERFACE_MOTION.has(motionSelect.value)) return;
+      appSettings.interfaceMotion = motionSelect.value;
+      persistSettings({ renderApp: false });
+    });
+  }
 
   if (aliasesInput) {
     aliasesInput.addEventListener("change", () => {
@@ -2489,6 +2800,7 @@ function bindPrefsPanel() {
   elements.prefsPanel.querySelectorAll("[data-shade]").forEach((swatch) => {
     swatch.addEventListener("click", () => {
       appSettings.noteColor = swatch.dataset.shade;
+      syncPrefsPanelValues();
       persistSettings();
     });
   });
@@ -2501,9 +2813,34 @@ function bindPrefsPanel() {
         return;
       }
       appSettings.noteColor = value;
+      syncPrefsPanelValues();
       persistSettings();
     });
   }
+}
+
+function syncPrefsPanelValues() {
+  if (!elements.prefsPanel) return;
+  const setValue = (selector, value) => {
+    const control = elements.prefsPanel.querySelector(selector);
+    if (control) control.value = value;
+  };
+  setValue("#prefsExposure", appSettings.interfaceContrast);
+  setValue("#prefsTextScale", String(Math.round(appSettings.textScale * 100)));
+  setValue("#prefsSpacing", appSettings.spacing);
+  setValue("#prefsInterfaceMotion", appSettings.interfaceMotion);
+  setValue("#prefsAliases", appSettings.noteAliases.join(", "));
+  setValue("#prefsColor", appSettings.noteColor);
+
+  const output = elements.prefsPanel.querySelector("#prefsTextScaleOutput");
+  if (output) {
+    const label = `${Math.round(appSettings.textScale * 100)}%`;
+    output.value = label;
+    output.textContent = label;
+  }
+  elements.prefsPanel.querySelectorAll("[data-shade]").forEach((swatch) => {
+    swatch.classList.toggle("is-current", swatch.dataset.shade === appSettings.noteColor);
+  });
 }
 
 // ---- Untangle animation --------------------------------------------------
@@ -2514,7 +2851,7 @@ function bindPrefsPanel() {
 function playUntangle() {
   const svg = elements.lineSvg;
   const tasks = visibleTasks();
-  if (!svg || prefersReducedMotion || tasks.length < 2) {
+  if (!svg || shouldReduceInterfaceMotion() || tasks.length < 2) {
     setStep("line");
     return;
   }

@@ -8,6 +8,7 @@
  *   archive/<id>.json   archived threads
  *   bin/<id>.json       binned threads (deleted from the UI, kept until emptied)
  *   settings.json       user preferences
+ *   circumspection.json independent private writing entries
  *
  * Zero dependencies. Node 18+ required.
  */
@@ -28,9 +29,16 @@ const THREADS_DIR =
 const ARCHIVE_DIR = path.join(DATA_DIR, "archive");
 const BIN_DIR = path.join(DATA_DIR, "bin");
 const SETTINGS_PATH = path.join(DATA_DIR, "settings.json");
+const CIRCUMSPECTION_PATH = path.join(DATA_DIR, "circumspection.json");
 const STATIC_DIR = __dirname;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const SETTINGS_SCHEMA_VERSION = 1;
+const CIRCUMSPECTION_SCHEMA_VERSION = 1;
+const DEFAULT_BODY_LIMIT = 8 * 1024 * 1024;
+const CIRCUMSPECTION_BODY_LIMIT = 64 * 1024 * 1024;
+const MAX_CIRCUMSPECTION_ENTRIES = 500;
+const MAX_CIRCUMSPECTION_CONTENT = 2_000_000;
+const MAX_CIRCUMSPECTION_AUDIT = 500;
 
 // Scope name -> directory. A thread lives in exactly one of these at a time;
 // archive / delete / restore are atomic renames between them.
@@ -123,6 +131,10 @@ function defaultSettings() {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     noteAliases: ["note"],
     noteColor: "#6f5f80",
+    interfaceContrast: "rich",
+    textScale: 1,
+    spacing: "calm",
+    interfaceMotion: "full",
   };
 }
 
@@ -148,6 +160,29 @@ function sanitizeSettings(body) {
     }
     out.noteColor = body.noteColor.trim().toLowerCase();
   }
+  if (body.interfaceContrast !== undefined) {
+    if (!["soft", "balanced", "rich"].includes(body.interfaceContrast)) return null;
+    out.interfaceContrast = body.interfaceContrast;
+  }
+  if (body.textScale !== undefined) {
+    if (
+      typeof body.textScale !== "number" ||
+      !Number.isFinite(body.textScale) ||
+      body.textScale < 0.9 ||
+      body.textScale > 1.2
+    ) {
+      return null;
+    }
+    out.textScale = body.textScale;
+  }
+  if (body.spacing !== undefined) {
+    if (!["compact", "calm", "open"].includes(body.spacing)) return null;
+    out.spacing = body.spacing;
+  }
+  if (body.interfaceMotion !== undefined) {
+    if (!["full", "quiet", "none"].includes(body.interfaceMotion)) return null;
+    out.interfaceMotion = body.interfaceMotion;
+  }
   return out;
 }
 
@@ -166,6 +201,467 @@ async function writeSettings(settings) {
   await fs.rename(tmp, SETTINGS_PATH);
 }
 
+// ---- Circumspection --------------------------------------------------------
+
+const CIRCUMSPECTION_EVENTS = new Set([
+  "DIARY_THRESHOLD_FOCUSED",
+  "CATALOGUE_STROKES_REVEALED",
+  "CATALOGUE_OPENED",
+  "CIRCUMSPECTION_ROUTE_RESOLVED",
+  "ENTRY_CREATED",
+  "ENTRY_RESUMED",
+  "ENTRY_OPENED_FOR_READING",
+  "REVISION_ENTERED",
+  "REVISION_COMMITTED",
+  "REVISION_DISCARDED",
+  "INPUT_ACCEPTED",
+  "WORD_COMMITTED",
+  "WORD_REVEAL_SCHEDULED",
+  "WORD_REVEAL_STARTED",
+  "WORD_SETTLED",
+  "PASTE_ACCEPTED",
+  "PASTE_SETTLED_IMMEDIATELY",
+  "AUTO_PAGE_BREAK_CREATED",
+  "MANUAL_PAGE_BREAK_CREATED",
+  "LEAF_DELETE_REQUESTED",
+  "LEAF_DELETED",
+  "PAGE_TURN_STARTED",
+  "PAGE_TURN_COMPLETED",
+  "OLDER_LEAF_INPUT_DETECTED",
+  "AUTO_FORWARDED_TO_LIVING_PAGE",
+  "OUTWARD_REQUESTED",
+  "OUTWARD_COMPLETED",
+  "SAVE_SUCCEEDED",
+  "SAVE_FELL_BACK_OFFLINE",
+  "STALE_THREAD_POINTER_RECOVERED",
+]);
+
+const CIRCUMSPECTION_MODES = new Set([
+  "writing",
+  "reading",
+  "revision",
+  "resume",
+  "new-entry",
+  "catalogue",
+  "living-page",
+  "earlier-leaf",
+]);
+
+const CIRCUMSPECTION_STATES = new Set([
+  "FILUM_OUTER",
+  "THRESHOLD_ACTIVE",
+  "CATALOGUE_ENTERING",
+  "CATALOGUE",
+  "INTENT_ROUTING",
+  "NEW_ENTRY",
+  "RESUME_ENTRY",
+  "INNER_ENTERING",
+  "LIVING_PAGE",
+  "EARLIER_LEAF_READING",
+  "AUTO_FORWARD_TO_LIVING_PAGE",
+  "REVISION",
+  "REVISION_ACTIVE",
+  "PAGE_TURNING",
+  "OUTWARD_PENDING",
+  "LISTENING",
+  "COMPOSING",
+  "BUFFERING_WORD",
+  "WORD_COMMITTED",
+  "QUEUED",
+  "PRESSURE_VISIBLE",
+  "REVEALING",
+  "SETTLED",
+  "PAGE_ACTIVE",
+  "OVERFLOW_PREDICTED",
+  "NEXT_PAGE_PREPARED",
+  "RAW_INPUT",
+  "AUTO_FORWARD",
+  "EXPLICIT_REVISE",
+  "LEAF_DELETE_PENDING",
+  "LEAF_DELETED",
+  "SETTLE_CHANGES",
+  "DISCARD",
+  "REPAGINATE",
+  "CLEAN",
+  "DIRTY",
+  "SAVE_SCHEDULED",
+  "SAVING",
+  "SAVED",
+  "OFFLINE_MIRRORED",
+  "SAVE_FAILED",
+]);
+
+const AUDIT_METADATA_ENUMS = {
+  trigger: new Set(["diary-body", "catalogue-strokes", "catalogue-item", "new-entry", "history"]),
+  pasteMode: new Set(["settle-immediately", "whisper-quickly", "whisper-normal"]),
+  pageMotion: new Set(["full", "reduced", "none"]),
+  pointerStatus: new Set(["valid", "missing", "recovered", "none"]),
+  inputType: new Set([
+    "insertText",
+    "insertCompositionText",
+    "insertFromComposition",
+    "insertFromPaste",
+    "insertLineBreak",
+    "insertParagraph",
+    "deleteContentBackward",
+    "deleteContentForward",
+    "historyUndo",
+    "historyRedo",
+  ]),
+};
+
+const AUDIT_METADATA_BOOLEANS = new Set([
+  "fallbackUsed",
+  "automatic",
+  "largePaste",
+  "recovered",
+]);
+
+const AUDIT_METADATA_NUMBERS = new Set([
+  "durationMs",
+  "pendingCount",
+  "wordCount",
+  "pageCount",
+  "breakOffset",
+  "queueDepth",
+  "inputLength",
+]);
+
+class CircumspectionValidationError extends Error {}
+
+function invalidCircumspection(message) {
+  throw new CircumspectionValidationError(message);
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function rejectUnknownKeys(value, allowed, label) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) invalidCircumspection(`${label} contains unknown field ${key}`);
+  }
+}
+
+function isIsoTimestamp(value) {
+  return (
+    typeof value === "string" &&
+    value.length <= 40 &&
+    /^\d{4}-\d{2}-\d{2}T/.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function requireInteger(value, min, max, label) {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    invalidCircumspection(`${label} is out of range`);
+  }
+  return value;
+}
+
+function requireNumber(value, min, max, label) {
+  if (!Number.isFinite(value) || value < min || value > max) {
+    invalidCircumspection(`${label} is out of range`);
+  }
+  return value;
+}
+
+function requireTimestamp(value, label) {
+  if (!isIsoTimestamp(value)) invalidCircumspection(`${label} is not an ISO timestamp`);
+  return value;
+}
+
+function requireNullableId(value, label) {
+  if (value !== null && (typeof value !== "string" || !isValidId(value))) {
+    invalidCircumspection(`${label} is not a valid id`);
+  }
+  return value;
+}
+
+function defaultCircumspectionStore() {
+  return {
+    schemaVersion: CIRCUMSPECTION_SCHEMA_VERSION,
+    settings: {
+      baseLagMs: 0,
+      wordStaggerMs: 0,
+      revealDurationMs: 60,
+      blurPx: 1,
+      spreadRadiusPx: 28,
+      pasteMode: "settle-immediately",
+      pageMotion: "full",
+      inkEffect: "none",
+      revisionMarker: "subtle",
+      outwardPolicy: "fast-settle",
+      liveInkOpacity: 0.7,
+      writingSizePx: 19,
+      writingMeasureCh: 62,
+    },
+    activeEntryId: null,
+    entries: [],
+    audit: [],
+  };
+}
+
+function validateCircumspectionSettings(raw) {
+  if (!isPlainObject(raw)) invalidCircumspection("settings must be an object");
+  rejectUnknownKeys(
+    raw,
+    new Set([
+      "baseLagMs",
+      "wordStaggerMs",
+      "revealDurationMs",
+      "blurPx",
+      "spreadRadiusPx",
+      "pasteMode",
+      "pageMotion",
+      "inkEffect",
+      "revisionMarker",
+      "outwardPolicy",
+      "liveInkOpacity",
+      "writingSizePx",
+      "writingMeasureCh",
+    ]),
+    "settings"
+  );
+  if (!["settle-immediately", "whisper-quickly", "whisper-normal"].includes(raw.pasteMode)) {
+    invalidCircumspection("settings.pasteMode is invalid");
+  }
+  if (!["full", "reduced", "none"].includes(raw.pageMotion)) {
+    invalidCircumspection("settings.pageMotion is invalid");
+  }
+  if (raw.inkEffect !== "none") {
+    invalidCircumspection("settings.inkEffect is invalid");
+  }
+  if (!["visible", "subtle", "none"].includes(raw.revisionMarker)) {
+    invalidCircumspection("settings.revisionMarker is invalid");
+  }
+  if (!["fast-settle", "preserve", "settle-offscreen"].includes(raw.outwardPolicy)) {
+    invalidCircumspection("settings.outwardPolicy is invalid");
+  }
+  return {
+    baseLagMs: requireNumber(raw.baseLagMs, 0, 1200, "settings.baseLagMs"),
+    wordStaggerMs: requireNumber(raw.wordStaggerMs, 0, 260, "settings.wordStaggerMs"),
+    revealDurationMs: requireNumber(raw.revealDurationMs, 40, 1800, "settings.revealDurationMs"),
+    blurPx: requireNumber(raw.blurPx, 0, 14, "settings.blurPx"),
+    spreadRadiusPx: requireNumber(raw.spreadRadiusPx, 6, 72, "settings.spreadRadiusPx"),
+    pasteMode: raw.pasteMode,
+    pageMotion: raw.pageMotion,
+    inkEffect: raw.inkEffect,
+    revisionMarker: raw.revisionMarker,
+    outwardPolicy: raw.outwardPolicy,
+    liveInkOpacity: requireNumber(raw.liveInkOpacity, 0.35, 1, "settings.liveInkOpacity"),
+    writingSizePx: requireNumber(raw.writingSizePx, 16, 24, "settings.writingSizePx"),
+    writingMeasureCh: requireNumber(raw.writingMeasureCh, 48, 78, "settings.writingMeasureCh"),
+  };
+}
+
+function validateCircumspectionEntry(raw, ids, index) {
+  const label = `entries[${index}]`;
+  if (!isPlainObject(raw)) invalidCircumspection(`${label} must be an object`);
+  rejectUnknownKeys(
+    raw,
+    new Set([
+      "id",
+      "createdAt",
+      "updatedAt",
+      "content",
+      "settledUntil",
+      "manualPageBreaks",
+      "lastMeaningfulAnchor",
+      "lastViewedAnchor",
+      "status",
+      "origin",
+      "revision",
+    ]),
+    label
+  );
+  if (typeof raw.id !== "string" || !isValidId(raw.id)) {
+    invalidCircumspection(`${label}.id is invalid`);
+  }
+  if (ids.has(raw.id)) invalidCircumspection(`duplicate entry id ${raw.id}`);
+  ids.add(raw.id);
+  if (typeof raw.content !== "string") invalidCircumspection(`${label}.content must be text`);
+  if (raw.content.length > MAX_CIRCUMSPECTION_CONTENT) {
+    invalidCircumspection(`${label}.content exceeds the entry limit`);
+  }
+  const contentLength = raw.content.length;
+  if (!Array.isArray(raw.manualPageBreaks) || raw.manualPageBreaks.length > 10_000) {
+    invalidCircumspection(`${label}.manualPageBreaks is invalid`);
+  }
+  let previousBreak = -1;
+  const manualPageBreaks = raw.manualPageBreaks.map((offset, breakIndex) => {
+    requireInteger(offset, 0, contentLength, `${label}.manualPageBreaks[${breakIndex}]`);
+    if (offset <= previousBreak) {
+      invalidCircumspection(`${label}.manualPageBreaks must be unique and ascending`);
+    }
+    previousBreak = offset;
+    return offset;
+  });
+  if (!["active", "archived"].includes(raw.status)) {
+    invalidCircumspection(`${label}.status is invalid`);
+  }
+  if (!isPlainObject(raw.origin)) invalidCircumspection(`${label}.origin must be an object`);
+  rejectUnknownKeys(raw.origin, new Set(["threadId", "threadNameSnapshot", "surface"]), `${label}.origin`);
+  const originThreadId = requireNullableId(raw.origin.threadId, `${label}.origin.threadId`);
+  if (
+    raw.origin.threadNameSnapshot !== null &&
+    (typeof raw.origin.threadNameSnapshot !== "string" || raw.origin.threadNameSnapshot.length > 80)
+  ) {
+    invalidCircumspection(`${label}.origin.threadNameSnapshot is invalid`);
+  }
+  if (raw.origin.surface !== "filum") invalidCircumspection(`${label}.origin.surface is invalid`);
+  if (!isPlainObject(raw.revision)) invalidCircumspection(`${label}.revision must be an object`);
+  rejectUnknownKeys(raw.revision, new Set(["lastRevisedAt"]), `${label}.revision`);
+  if (raw.revision.lastRevisedAt !== null) {
+    requireTimestamp(raw.revision.lastRevisedAt, `${label}.revision.lastRevisedAt`);
+  }
+  return {
+    id: raw.id,
+    createdAt: requireTimestamp(raw.createdAt, `${label}.createdAt`),
+    updatedAt: requireTimestamp(raw.updatedAt, `${label}.updatedAt`),
+    content: raw.content,
+    settledUntil: requireInteger(raw.settledUntil, 0, contentLength, `${label}.settledUntil`),
+    manualPageBreaks,
+    lastMeaningfulAnchor: requireInteger(
+      raw.lastMeaningfulAnchor,
+      0,
+      contentLength,
+      `${label}.lastMeaningfulAnchor`
+    ),
+    lastViewedAnchor: requireInteger(raw.lastViewedAnchor, 0, contentLength, `${label}.lastViewedAnchor`),
+    status: raw.status,
+    origin: {
+      threadId: originThreadId,
+      threadNameSnapshot: raw.origin.threadNameSnapshot,
+      surface: "filum",
+    },
+    revision: { lastRevisedAt: raw.revision.lastRevisedAt },
+  };
+}
+
+function validateAuditMetadata(raw, label) {
+  if (!isPlainObject(raw)) invalidCircumspection(`${label}.metadata must be an object`);
+  const metadata = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (AUDIT_METADATA_BOOLEANS.has(key)) {
+      if (typeof value !== "boolean") invalidCircumspection(`${label}.metadata.${key} is invalid`);
+      metadata[key] = value;
+    } else if (AUDIT_METADATA_NUMBERS.has(key)) {
+      metadata[key] = requireInteger(value, 0, Number.MAX_SAFE_INTEGER, `${label}.metadata.${key}`);
+    } else if (AUDIT_METADATA_ENUMS[key]) {
+      if (!AUDIT_METADATA_ENUMS[key].has(value)) {
+        invalidCircumspection(`${label}.metadata.${key} is invalid`);
+      }
+      metadata[key] = value;
+    }
+    // Unknown metadata is deliberately discarded. Audit metadata is a strict
+    // allowlist so private writing can never be persisted here accidentally.
+  }
+  return metadata;
+}
+
+function validateNullableAuditEnum(value, allowed, label) {
+  if (value !== null && !allowed.has(value)) invalidCircumspection(`${label} is invalid`);
+  return value;
+}
+
+function validateNullableAuditInteger(value, label) {
+  if (value === null) return null;
+  return requireInteger(value, 0, Number.MAX_SAFE_INTEGER, label);
+}
+
+function validateCircumspectionAuditEvent(raw, ids, index) {
+  const label = `audit[${index}]`;
+  if (!isPlainObject(raw)) invalidCircumspection(`${label} must be an object`);
+  if (typeof raw.id !== "string" || !isValidId(raw.id)) invalidCircumspection(`${label}.id is invalid`);
+  if (ids.has(raw.id)) invalidCircumspection(`duplicate audit id ${raw.id}`);
+  ids.add(raw.id);
+  if (!CIRCUMSPECTION_EVENTS.has(raw.event)) invalidCircumspection(`${label}.event is invalid`);
+  const ruleId = raw.ruleId;
+  if (ruleId !== null && (typeof ruleId !== "string" || !/^R\d{1,2}$/.test(ruleId))) {
+    invalidCircumspection(`${label}.ruleId is invalid`);
+  }
+  return {
+    id: raw.id,
+    event: raw.event,
+    entryId: requireNullableId(raw.entryId, `${label}.entryId`),
+    threadId: requireNullableId(raw.threadId, `${label}.threadId`),
+    mode: validateNullableAuditEnum(raw.mode, CIRCUMSPECTION_MODES, `${label}.mode`),
+    sourceState: validateNullableAuditEnum(raw.sourceState, CIRCUMSPECTION_STATES, `${label}.sourceState`),
+    destinationState: validateNullableAuditEnum(
+      raw.destinationState,
+      CIRCUMSPECTION_STATES,
+      `${label}.destinationState`
+    ),
+    ruleId,
+    contentLength: validateNullableAuditInteger(raw.contentLength, `${label}.contentLength`),
+    settledUntil: validateNullableAuditInteger(raw.settledUntil, `${label}.settledUntil`),
+    pageIndex: validateNullableAuditInteger(raw.pageIndex, `${label}.pageIndex`),
+    metadata: validateAuditMetadata(raw.metadata, label),
+    occurredAt: requireTimestamp(raw.occurredAt, `${label}.occurredAt`),
+  };
+}
+
+function validateCircumspectionStore(raw) {
+  if (!isPlainObject(raw)) invalidCircumspection("store must be an object");
+  rejectUnknownKeys(raw, new Set(["schemaVersion", "settings", "activeEntryId", "entries", "audit"]), "store");
+  if (raw.schemaVersion !== CIRCUMSPECTION_SCHEMA_VERSION) {
+    invalidCircumspection("unsupported circumspection schema");
+  }
+  if (!Array.isArray(raw.entries) || raw.entries.length > MAX_CIRCUMSPECTION_ENTRIES) {
+    invalidCircumspection("entries exceeds the store limit");
+  }
+  if (!Array.isArray(raw.audit) || raw.audit.length > 5_000) {
+    invalidCircumspection("audit exceeds the accepted input limit");
+  }
+  const ids = new Set();
+  const entries = raw.entries.map((entry, index) => validateCircumspectionEntry(entry, ids, index));
+  const activeEntryId = requireNullableId(raw.activeEntryId, "activeEntryId");
+  if (activeEntryId !== null && !ids.has(activeEntryId)) {
+    invalidCircumspection("activeEntryId does not reference an entry");
+  }
+  // Audit is intentionally a rolling debugging window. Dropping the oldest
+  // records is the only lossy normalisation performed by this endpoint.
+  const auditIds = new Set();
+  const validatedAudit = raw.audit.map((event, index) =>
+    validateCircumspectionAuditEvent(event, auditIds, index)
+  );
+  const audit = validatedAudit.slice(-MAX_CIRCUMSPECTION_AUDIT);
+  return {
+    schemaVersion: CIRCUMSPECTION_SCHEMA_VERSION,
+    settings: validateCircumspectionSettings(raw.settings),
+    activeEntryId,
+    entries,
+    audit,
+  };
+}
+
+async function readCircumspectionStore() {
+  try {
+    const raw = await fs.readFile(CIRCUMSPECTION_PATH, "utf8");
+    return validateCircumspectionStore(JSON.parse(raw));
+  } catch (err) {
+    if (err && err.code === "ENOENT") return defaultCircumspectionStore();
+    // A corrupt or unsupported file is never converted into an empty store.
+    // Surface the error and leave the original bytes untouched for recovery.
+    throw err;
+  }
+}
+
+async function writeCircumspectionStore(store) {
+  const tmp = `${CIRCUMSPECTION_PATH}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(store, null, 2), { encoding: "utf8", mode: 0o600 });
+    await fs.rename(tmp, CIRCUMSPECTION_PATH);
+  } finally {
+    await fs.unlink(tmp).catch((err) => {
+      if (err.code !== "ENOENT") throw err;
+    });
+  }
+}
+
 // ---- HTTP helpers ----------------------------------------------------------
 
 function sendJson(res, status, body) {
@@ -182,35 +678,64 @@ function sendError(res, status, message) {
   sendJson(res, status, { error: message });
 }
 
-async function readJsonBody(req) {
+class RequestBodyError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+async function readJsonBody(req, maxBytes = DEFAULT_BODY_LIMIT) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
+    let settled = false;
     req.on("data", (chunk) => {
+      if (settled) return;
       total += chunk.length;
-      // 8 MB fits a couple of inline image references (data URLs) per task.
-      if (total > 8 * 1024 * 1024) {
-        reject(new Error("body too large"));
-        req.destroy();
+      if (total > maxBytes) {
+        settled = true;
+        reject(new RequestBodyError(413, "request body too large"));
         return;
       }
       chunks.push(chunk);
     });
     req.on("end", () => {
+      if (settled) return;
+      settled = true;
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
-      } catch (err) {
-        reject(err);
+      } catch {
+        reject(new RequestBodyError(400, "invalid JSON"));
       }
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 
 function emptyState() {
-  return { tasks: [], currentStep: "capture", focusIndex: 0 };
+  return {
+    tasks: [],
+    currentStep: "capture",
+    focusIndex: 0,
+    circumspectionContext: {
+      lastEntryId: null,
+      lastVisitedAt: null,
+      lastMeaningfulCircumspectionAction: null,
+      lastCircumspectionMode: null,
+    },
+    navigationContext: {
+      lastMeaningfulSurface: null,
+      lastMeaningfulAction: null,
+      updatedAt: null,
+    },
+  };
 }
 
 function nowIso() {
@@ -229,6 +754,28 @@ async function handleSettingsApi(req, res) {
     if (!settings) return sendError(res, 400, "invalid settings");
     await writeSettings(settings);
     return sendJson(res, 200, settings);
+  }
+  res.writeHead(405, { allow: "GET, PUT" });
+  res.end();
+}
+
+async function handleCircumspectionApi(req, res) {
+  if (req.method === "GET") {
+    return sendJson(res, 200, await readCircumspectionStore());
+  }
+  if (req.method === "PUT") {
+    const body = await readJsonBody(req, CIRCUMSPECTION_BODY_LIMIT);
+    let store;
+    try {
+      store = validateCircumspectionStore(body);
+    } catch (err) {
+      if (err instanceof CircumspectionValidationError) {
+        return sendError(res, 400, err.message);
+      }
+      throw err;
+    }
+    await writeCircumspectionStore(store);
+    return sendJson(res, 200, store);
   }
   res.writeHead(405, { allow: "GET, PUT" });
   res.end();
@@ -254,6 +801,9 @@ async function handleApi(req, res, url) {
 
   if (segments[1] === "settings" && segments.length === 2) {
     return handleSettingsApi(req, res);
+  }
+  if (segments[1] === "circumspection" && segments.length === 2) {
+    return handleCircumspectionApi(req, res);
   }
   if (segments[1] === "bin" && segments.length === 2) {
     return handleBinApi(req, res);
@@ -412,6 +962,11 @@ const server = http.createServer(async (req, res) => {
       await handleStatic(req, res, url);
     }
   } catch (err) {
+    if (err instanceof RequestBodyError) {
+      if (!res.headersSent) sendError(res, err.statusCode, err.message);
+      else res.end();
+      return;
+    }
     console.error("[filum]", err);
     if (!res.headersSent) sendError(res, 500, "internal error");
     else res.end();
@@ -429,6 +984,6 @@ const server = http.createServer(async (req, res) => {
   server.listen(PORT, () => {
     console.log(`[filum] serving on http://localhost:${PORT}`);
     console.log(`[filum] threads at ${THREADS_DIR}`);
-    console.log(`[filum] archive/bin/settings at ${DATA_DIR}`);
+    console.log(`[filum] archive/bin/settings/circumspection at ${DATA_DIR}`);
   });
 })();

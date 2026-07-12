@@ -3,10 +3,27 @@
 Filum gives you a flow:
 
 1. **Gather** — capture all the tasks currently occupying your mind.
-3. **Choose the order** — move tasks into a usable sequence and optionally add rough durations.
-4. **Follow the thread** — focus on one task at a time.
+2. **Choose the order** — move tasks into a usable sequence and optionally add rough durations.
+3. **Follow the thread** — focus on one task at a time.
 
 It is useful when you have too many competing tasks and need a calm, local, minimal way to convert them into a sequence.
+
+## Circumspection
+
+Circumspection is Filum's independent private writing space. Open it from the
+compact book control in the top bar, or use the adjacent three strokes to open
+the global Catalogue.
+
+Writing is direct: text and the native caret remain visible at input speed.
+Click any word to edit it in place, including words on earlier leaves. Page
+breaks can be added with **Turn the leaf** or `Cmd/Ctrl+Enter`, and every leaf
+can be deleted through an explicit confirmation. Entries have no titles and
+remain independent from Filum threads.
+
+All personalisation lives in the main **Preferences** panel. The v1.1 writing
+model uses `Ink effect: None`, with no delayed reveal, blur, or post-text
+animation. Circumspection is designed and tested desktop/web-first; responsive
+mobile layouts remain available as a secondary path.
 
 ## A quick look
 
@@ -75,6 +92,17 @@ By default, Filum stores your saved threads here:
 ```
 
 Each thread is stored as a separate `.json` file.
+
+Circumspection uses one independent global file and an offline browser mirror:
+
+```text
+~/.filum/circumspection.json
+localStorage: filum:circumspection:v1
+```
+
+Deleting or archiving a thread does not delete its independent Circumspection
+entries. Global Personalisation settings are stored in
+`~/.filum/settings.json`.
 
 To use a custom storage directory:
 

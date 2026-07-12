@@ -15,7 +15,7 @@
   </head>
   <body>
     <div class="app-shell">
-      <div class="thread-bar" role="toolbar" aria-label="Thread controls">
+      <div class="thread-bar" role="toolbar" aria-label="Filum controls">
         <div class="thread-menu">
           <button id="threadMenuButton" class="ghost-button thread-button thread-menu-button" type="button"
                   aria-haspopup="listbox" aria-expanded="false" aria-controls="threadMenu">
@@ -32,6 +32,23 @@
           <button id="prefsButton" class="ghost-button thread-button" type="button"
                   aria-haspopup="true" aria-expanded="false" aria-controls="prefsPanel">Preferences</button>
           <div id="prefsPanel" class="thread-menu-pop prefs-pop" aria-label="Preferences" hidden></div>
+        </div>
+        <div class="circ-launcher" role="group" aria-label="Circumspection">
+          <button id="circCatalogueButton" class="circ-launcher-catalogue" type="button"
+                  aria-label="Open Circumspection catalogue">
+            <span class="circ-strokes" aria-hidden="true"><span></span><span></span><span></span></span>
+          </button>
+          <button id="circOpenButton" class="circ-launcher-open" type="button"
+                  aria-label="Open Circumspection" aria-describedby="circOpenDescription">
+            <svg class="circ-launcher-icon" width="24" height="24" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="1.6"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3.5 5.5c2.9-.8 5.7-.2 8.5 1.7v11.5c-2.8-1.9-5.6-2.5-8.5-1.7V5.5Z" />
+              <path d="M20.5 5.5c-2.9-.8-5.7-.2-8.5 1.7v11.5c2.8-1.9 5.6-2.5 8.5-1.7V5.5Z" />
+            </svg>
+            <span class="circ-launcher-label">Circumspection</span>
+          </button>
+          <span id="circOpenDescription" class="visually-hidden">Enter your private reflective writing space</span>
         </div>
         <span id="threadStatus" class="thread-status" aria-live="polite"></span>
       </div>
@@ -186,6 +203,70 @@
       </main>
     </div>
 
+    <section id="circRoot" class="circ-root" hidden aria-label="Circumspection">
+      <header class="circ-inner-controls">
+        <button id="circOutward" class="circ-text-control" type="button" aria-label="Return to Filum">Outward</button>
+        <button id="circInnerCatalogue" class="circ-catalogue-control" type="button"
+                aria-label="Open Circumspection catalogue">
+          <span class="circ-strokes" aria-hidden="true"><span></span><span></span><span></span></span>
+        </button>
+      </header>
+
+      <main id="circWritingView" class="circ-writing-view">
+        <div id="circField" class="circ-field">
+          <p id="circModeLabel" class="circ-mode-label">Living Page</p>
+          <p id="circListening" class="circ-listening" aria-live="polite">the page is listening</p>
+          <div id="circProjection" class="circ-projection" aria-hidden="true"></div>
+          <textarea id="circInput" class="circ-input" spellcheck="true" autocapitalize="sentences"
+                    aria-label="Circumspection writing surface"
+                    aria-describedby="circInputDescription"></textarea>
+          <textarea id="circRevisionInput" class="circ-revision-input" spellcheck="true"
+                    autocapitalize="sentences" aria-label="Revise settled Circumspection writing"
+                    aria-describedby="circInputDescription" hidden></textarea>
+          <p id="circInputDescription" class="visually-hidden">
+            Write or revise your reflection directly. Every change is saved immediately.
+          </p>
+        </div>
+
+        <nav class="circ-leaf-navigation" aria-label="Circumspection leaves">
+          <button id="circPrevLeaf" class="circ-text-control" type="button">Earlier</button>
+          <span id="circLeafPosition" aria-live="polite">Living Page</span>
+          <button id="circNextLeaf" class="circ-text-control" type="button">Later</button>
+        </nav>
+        <div class="circ-writing-controls">
+          <button id="circDeleteLeaf" class="circ-text-control" type="button">Delete leaf</button>
+          <button id="circRevise" class="circ-text-control" type="button">Revise</button>
+          <button id="circTurnLeaf" class="circ-text-control" type="button">Turn the leaf</button>
+        </div>
+        <div id="circDeleteLeafConfirm" class="circ-delete-confirm" hidden>
+          <span>Delete this leaf?</span>
+          <button id="circCancelDeleteLeaf" class="circ-text-control" type="button">Keep it</button>
+          <button id="circConfirmDeleteLeaf" class="circ-settle-control" type="button">Delete leaf</button>
+        </div>
+        <div id="circRevisionActions" class="circ-revision-actions" hidden>
+          <button id="circDiscardRevision" class="circ-text-control" type="button">Discard</button>
+          <button id="circSettleRevision" class="circ-settle-control" type="button">Settle changes</button>
+        </div>
+      </main>
+
+      <section id="circCatalogueView" class="circ-catalogue-view" aria-labelledby="circCatalogueHeading" hidden>
+        <header class="circ-catalogue-heading">
+          <div>
+            <p class="section-label">Across every thread</p>
+            <h2 id="circCatalogueHeading" tabindex="-1">Catalogue</h2>
+          </div>
+          <div class="circ-catalogue-actions">
+            <button id="circReturnLiving" class="circ-text-control" type="button">Return to Living Page</button>
+            <button id="circNewEntry" class="circ-settle-control" type="button">Begin another</button>
+          </div>
+        </header>
+        <div id="circCatalogueList" class="circ-catalogue-list" aria-live="polite"></div>
+      </section>
+
+      <div id="circLive" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+    </section>
+
     <script src="app.js"></script>
+    <script src="circumspection.js"></script>
   </body>
 </html>

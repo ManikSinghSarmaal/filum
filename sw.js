@@ -1,9 +1,10 @@
-const CACHE_NAME = "filum-static-v6";
+const CACHE_NAME = "filum-static-v8";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./circumspection.js",
   "./manifest.json",
   "./icon.svg"
 ];
