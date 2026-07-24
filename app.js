@@ -85,6 +85,7 @@ const elements = {
   planningList: document.getElementById("planningList"),
   lineSvg: document.getElementById("lineSvg"),
   linePanel: document.querySelector('.panel[data-step="line"]'),
+  lineStepLabel: document.getElementById("lineStepLabel"),
   linearList: document.getElementById("linearList"),
   focusTitle: document.getElementById("focusTitle"),
   focusNotes: document.getElementById("focusNotes"),
@@ -1710,6 +1711,9 @@ function renderLine() {
   const focused = all[state.focusIndex];
   const currentTask = focused && !focused.done ? focused : null;
   const editingHere = !!(currentTask && editingTaskId === currentTask.id && state.currentStep === "line");
+  if (elements.lineStepLabel) {
+    elements.lineStepLabel.textContent = currentTask ? `Step ${state.focusIndex + 1}` : "Sequence";
+  }
 
   // The editor renders in place of the read-only "Do this now" content.
   if (elements.focusEditor) {
@@ -3162,10 +3166,16 @@ function bindPrefsPanel(root) {
     const requested = gitInput.checked;
     gitInput.disabled = true;
     try {
-      await storage.configureVersioning(requested);
+      const result = await storage.configureVersioning(requested);
       appSettings.gitVersioningEnabled = requested;
       saveSettingsMirror();
-      setStatus(requested ? "Git thread history is on" : "Git thread history is off");
+      setStatus(
+        requested
+          ? "Git thread history is on"
+          : result.stopRecorded === false
+            ? "Git thread history is off; its final marker could not be committed"
+            : "Git thread history is off"
+      );
     } catch (error) {
       appSettings.gitVersioningEnabled = !requested;
       gitInput.checked = !requested;

@@ -89,6 +89,21 @@ textarea {
   color: var(--muted);
 }
 
+.thread-bar .thread-button {
+  border-color: transparent;
+  color: var(--muted);
+  background: rgba(255, 252, 246, 0.28);
+  font-weight: 400;
+}
+
+.thread-bar .thread-button:hover,
+.thread-bar .thread-button:focus-visible,
+.thread-bar .thread-button[aria-expanded="true"] {
+  border-color: transparent;
+  color: var(--ink);
+  background: rgba(231, 223, 208, 0.48);
+}
+
 /* ---- Saved-threads dropdown + inline rename ----------------------- */
 
 .thread-menu {
@@ -750,6 +765,11 @@ textarea {
   text-underline-offset: 2px;
 }
 
+.rich-surface strong,
+.rich-surface b {
+  font-weight: 700;
+}
+
 .rich-toolbar {
   position: relative;
   display: flex;
@@ -789,6 +809,17 @@ textarea {
   height: 22px;
   margin-inline: 2px;
   background: var(--line);
+}
+
+.rich-link-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .rich-link-panel {
@@ -846,6 +877,7 @@ textarea {
 }
 
 .thread-reference {
+  position: relative;
   display: inline-flex;
   align-items: center;
   max-width: min(260px, 80vw);
@@ -858,6 +890,49 @@ textarea {
   font-size: 0.9em;
   vertical-align: baseline;
   cursor: pointer;
+}
+
+.thread-reference--editable {
+  justify-content: center;
+  width: fit-content;
+  max-width: min(360px, calc(100% - 12px));
+  min-height: 26px;
+  margin: 6px 3px 3px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+}
+
+.thread-reference-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.thread-reference-remove {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--bg-soft);
+  font: 600 12px/1 sans-serif;
+  cursor: pointer;
+}
+
+.thread-reference-remove:hover,
+.thread-reference-remove:focus-visible {
+  color: var(--bg-soft);
+  background: var(--ink);
+  outline: none;
 }
 
 input:focus,
@@ -2027,6 +2102,14 @@ mark.find-hit {
 .circ-strokes > span:nth-child(2) { width: 17px; }
 .circ-strokes > span:nth-child(3) { width: 20px; }
 
+#circInnerCatalogue .circ-strokes {
+  opacity: 0.72;
+}
+
+#circInnerCatalogue .circ-strokes > span {
+  height: 1.8px;
+}
+
 .circ-launcher-catalogue:hover .circ-strokes,
 .circ-launcher-catalogue:focus-visible .circ-strokes,
 .circ-catalogue-control:hover .circ-strokes,
@@ -2066,17 +2149,6 @@ body.is-circumspecting > .app-shell {
 .circ-catalogue-view[hidden],
 .circ-revision-input[hidden],
 .circ-revision-actions[hidden] { display: none; }
-
-.circ-root::before {
-  content: "";
-  position: fixed;
-  top: 13vh;
-  bottom: 11vh;
-  left: max(24px, calc(50vw - 36ch));
-  width: 1px;
-  pointer-events: none;
-  background: linear-gradient(transparent, var(--line) 12%, var(--line) 88%, transparent);
-}
 
 .circ-inner-controls {
   position: fixed;
@@ -2143,8 +2215,10 @@ body.is-circumspecting > .app-shell {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  width: min(var(--circ-measure, 62ch), calc(100vw - 48px));
+  width: min(var(--circ-measure, 74ch), calc(100vw - 48px));
   margin: 0 auto;
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: var(--circ-writing-size, 19px);
 }
 
 .circ-field::before {
@@ -2194,16 +2268,20 @@ body.is-circumspecting > .app-shell {
 .circ-field > .rich-toolbar {
   grid-column: 1;
   grid-row: 2;
-  justify-content: flex-start;
-  width: 100%;
-  margin: -8px 0 24px;
-  padding: 5px 0 9px;
-  border-top: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
+  justify-self: end;
+  justify-content: flex-end;
+  width: fit-content;
+  margin: -10px clamp(14px, 3vw, 28px) 24px 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 252, 246, 0.88);
+  font-size: 0.75rem;
 }
 
 .circ-field > .rich-toolbar .rich-link-panel {
+  right: 0;
+  left: auto;
   top: calc(100% + 7px);
   bottom: auto;
 }
@@ -2211,6 +2289,7 @@ body.is-circumspecting > .app-shell {
 .circ-field > .rich-mention-menu {
   top: 108px;
   bottom: auto;
+  font-size: 0.85rem;
 }
 
 .circ-listening {
@@ -2454,9 +2533,33 @@ body.is-circumspecting > .app-shell {
 .circ-entry {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 24px;
-  padding: 24px 0;
+  gap: 0 24px;
   border-bottom: 1px solid var(--line);
+}
+
+.circ-entry-main {
+  grid-column: 1;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 24px 0;
+  border: 0;
+  border-radius: 10px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+button.circ-entry-main {
+  cursor: pointer;
+}
+
+button.circ-entry-main:hover,
+button.circ-entry-main:focus-visible {
+  background: rgba(255, 252, 246, 0.62);
+  box-shadow: 0 0 0 8px rgba(255, 252, 246, 0.62);
+  outline: none;
 }
 
 .circ-entry-date {
@@ -2482,7 +2585,7 @@ body.is-circumspecting > .app-shell {
 
 .circ-entry-actions {
   grid-column: 2;
-  grid-row: 1 / span 3;
+  grid-row: 1;
   align-self: center;
   opacity: 0.62;
   transition: opacity 180ms ease;
@@ -2625,6 +2728,5 @@ body.is-circumspecting > .app-shell {
   .circ-catalogue-control:focus-visible,
   .circ-text-control:focus-visible,
   .circ-settle-control:focus-visible { outline: 2px solid ButtonText; }
-  .circ-root::before,
   .circ-field::before { background: ButtonText; }
 }

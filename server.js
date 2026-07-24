@@ -43,6 +43,8 @@ const MAX_CIRCUMSPECTION_ENTRIES = 500;
 const MAX_CIRCUMSPECTION_CONTENT = 2_000_000;
 const MAX_CIRCUMSPECTION_AUDIT = 500;
 let gitCommitChain = Promise.resolve();
+const GIT_STOP_MESSAGE =
+  "Stop Filum thread history — stopped tracking the shadows behind me, as enroute git was scared of seeing my soul";
 
 // Scope name -> directory. A thread lives in exactly one of these at a time;
 // archive / delete / restore are atomic renames between them.
@@ -201,7 +203,7 @@ function dataLayoutSupportsGit() {
 }
 
 async function runGit(args, options = {}) {
-  return execFileAsync("git", args, {
+  return execFileAsync("git", ["-c", `safe.directory=${path.resolve(DATA_DIR)}`, ...args], {
     cwd: DATA_DIR,
     maxBuffer: 1024 * 1024,
     ...options,
@@ -240,6 +242,32 @@ async function hasStagedGitChanges() {
   }
 }
 
+async function hasGitCommits() {
+  try {
+    await runGit(["rev-parse", "--verify", "HEAD"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function commitGitSnapshot(message, authorDate, allowEmpty = false) {
+  await runGit(["add", "-A", "--", ".gitignore", "threads", "archive", "bin"]);
+  if (!allowEmpty && !(await hasStagedGitChanges())) return false;
+  const originalDate = isIsoTimestamp(authorDate) ? authorDate : nowIso();
+  const args = ["commit"];
+  if (allowEmpty) args.push("--allow-empty");
+  args.push("-m", String(message).slice(0, 240));
+  await runGit(args, {
+    env: {
+      ...process.env,
+      GIT_AUTHOR_DATE: originalDate,
+      GIT_COMMITTER_DATE: allowEmpty ? originalDate : nowIso(),
+    },
+  });
+  return true;
+}
+
 async function ensureGitHistory() {
   if (!dataLayoutSupportsGit()) {
     const error = new Error(
@@ -254,6 +282,7 @@ async function ensureGitHistory() {
     await runGit(["init"]);
   }
   await ensureGitIdentity();
+  const hadCommits = await hasGitCommits();
   const ignore = [
     "settings.json",
     "circumspection.json",
@@ -263,10 +292,10 @@ async function ensureGitHistory() {
     "",
   ].join("\n");
   await fs.writeFile(path.join(DATA_DIR, ".gitignore"), ignore, "utf8");
-  if (!alreadyInitialized) {
+  if (!hadCommits) {
     await runGit(["add", "-A", "--", ".gitignore", "threads", "archive", "bin"]);
   }
-  if (!alreadyInitialized && (await hasStagedGitChanges())) {
+  if (!hadCommits && (await hasStagedGitChanges())) {
     const timestamp = nowIso();
     await runGit(["commit", "-m", "Start Filum thread history"], {
       env: {
@@ -276,7 +305,7 @@ async function ensureGitHistory() {
       },
     });
   }
-  return true;
+  return { createdHistory: !hadCommits };
 }
 
 async function gitVersioningEnabled() {
@@ -292,23 +321,20 @@ function queueGitCommit(message, authorDate) {
     .then(async () => {
       if (!(await gitVersioningEnabled())) return false;
       await ensureGitHistory();
-      await runGit(["add", "-A", "--", ".gitignore", "threads", "archive", "bin"]);
-      if (!(await hasStagedGitChanges())) return false;
-      const originalDate = isIsoTimestamp(authorDate) ? authorDate : nowIso();
-      await runGit(["commit", "-m", String(message).slice(0, 120)], {
-        env: {
-          ...process.env,
-          GIT_AUTHOR_DATE: originalDate,
-          GIT_COMMITTER_DATE: nowIso(),
-        },
-      });
-      return true;
+      return commitGitSnapshot(message, authorDate);
     })
     .catch((error) => {
       console.warn("[filum] thread saved; Git history remained unavailable:", error.message);
       return false;
     });
   return gitCommitChain;
+}
+
+async function recordGitStopBoundary() {
+  await gitCommitChain;
+  await ensureGitHistory();
+  const stoppedAt = nowIso();
+  return commitGitSnapshot(GIT_STOP_MESSAGE, stoppedAt, true);
 }
 
 function originalDateForThreadChange(existing, nextState) {
@@ -504,6 +530,14 @@ const CIRCUMSPECTION_STATES = new Set([
   "SAVE_FAILED",
 ]);
 
+const LEGACY_CIRCUMSPECTION_STATE_ALIASES = new Map([
+  ["writing", "LIVING_PAGE"],
+  ["reading", "EARLIER_LEAF_READING"],
+  ["revision", "REVISION_ACTIVE"],
+  ["catalogue", "CATALOGUE"],
+  ["outer", "FILUM_OUTER"],
+]);
+
 const AUDIT_METADATA_ENUMS = {
   trigger: new Set(["diary-body", "catalogue-strokes", "catalogue-item", "new-entry", "history"]),
   pasteMode: new Set(["settle-immediately", "whisper-quickly", "whisper-normal"]),
@@ -609,7 +643,9 @@ function defaultCircumspectionStore() {
       outwardPolicy: "fast-settle",
       liveInkOpacity: 0.7,
       writingSizePx: 19,
-      writingMeasureCh: 62,
+      writingMeasureCh: 74,
+      writingMeasureVersion: 2,
+      diaryLayout: "simple-musky",
     },
     activeEntryId: null,
     entries: [],
@@ -635,38 +671,55 @@ function validateCircumspectionSettings(raw) {
       "liveInkOpacity",
       "writingSizePx",
       "writingMeasureCh",
+      "writingMeasureVersion",
+      "diaryLayout",
     ]),
     "settings"
   );
-  if (!["settle-immediately", "whisper-quickly", "whisper-normal"].includes(raw.pasteMode)) {
+  const settings = { ...defaultCircumspectionStore().settings, ...raw };
+  if (!["settle-immediately", "whisper-quickly", "whisper-normal"].includes(settings.pasteMode)) {
     invalidCircumspection("settings.pasteMode is invalid");
   }
-  if (!["full", "reduced", "none"].includes(raw.pageMotion)) {
+  if (!["full", "reduced", "none"].includes(settings.pageMotion)) {
     invalidCircumspection("settings.pageMotion is invalid");
   }
-  if (raw.inkEffect !== "none") {
+  if (settings.inkEffect !== "none") {
     invalidCircumspection("settings.inkEffect is invalid");
   }
-  if (!["visible", "subtle", "none"].includes(raw.revisionMarker)) {
+  if (!["visible", "subtle", "none"].includes(settings.revisionMarker)) {
     invalidCircumspection("settings.revisionMarker is invalid");
   }
-  if (!["fast-settle", "preserve", "settle-offscreen"].includes(raw.outwardPolicy)) {
+  if (!["fast-settle", "preserve", "settle-offscreen"].includes(settings.outwardPolicy)) {
     invalidCircumspection("settings.outwardPolicy is invalid");
   }
+  const diaryLayout =
+    raw.diaryLayout === undefined
+      ? requireNumber(settings.writingMeasureCh, 48, 96, "settings.writingMeasureCh") >= 84
+        ? "wider-musky"
+        : "simple-musky"
+      : raw.diaryLayout;
+  if (!["simple-musky", "wider-musky"].includes(diaryLayout)) {
+    invalidCircumspection("settings.diaryLayout is invalid");
+  }
   return {
-    baseLagMs: requireNumber(raw.baseLagMs, 0, 1200, "settings.baseLagMs"),
-    wordStaggerMs: requireNumber(raw.wordStaggerMs, 0, 260, "settings.wordStaggerMs"),
-    revealDurationMs: requireNumber(raw.revealDurationMs, 40, 1800, "settings.revealDurationMs"),
-    blurPx: requireNumber(raw.blurPx, 0, 14, "settings.blurPx"),
-    spreadRadiusPx: requireNumber(raw.spreadRadiusPx, 6, 72, "settings.spreadRadiusPx"),
-    pasteMode: raw.pasteMode,
-    pageMotion: raw.pageMotion,
-    inkEffect: raw.inkEffect,
-    revisionMarker: raw.revisionMarker,
-    outwardPolicy: raw.outwardPolicy,
-    liveInkOpacity: requireNumber(raw.liveInkOpacity, 0.35, 1, "settings.liveInkOpacity"),
-    writingSizePx: requireNumber(raw.writingSizePx, 16, 24, "settings.writingSizePx"),
-    writingMeasureCh: requireNumber(raw.writingMeasureCh, 48, 78, "settings.writingMeasureCh"),
+    baseLagMs: requireNumber(settings.baseLagMs, 0, 1200, "settings.baseLagMs"),
+    wordStaggerMs: requireNumber(settings.wordStaggerMs, 0, 260, "settings.wordStaggerMs"),
+    revealDurationMs: requireNumber(settings.revealDurationMs, 40, 1800, "settings.revealDurationMs"),
+    blurPx: requireNumber(settings.blurPx, 0, 14, "settings.blurPx"),
+    spreadRadiusPx: requireNumber(settings.spreadRadiusPx, 0, 72, "settings.spreadRadiusPx"),
+    pasteMode: settings.pasteMode,
+    pageMotion: settings.pageMotion,
+    inkEffect: settings.inkEffect,
+    revisionMarker: settings.revisionMarker,
+    outwardPolicy: settings.outwardPolicy,
+    liveInkOpacity: requireNumber(settings.liveInkOpacity, 0.35, 1, "settings.liveInkOpacity"),
+    writingSizePx: requireNumber(settings.writingSizePx, 16, 24, "settings.writingSizePx"),
+    writingMeasureCh: requireNumber(settings.writingMeasureCh, 48, 96, "settings.writingMeasureCh"),
+    writingMeasureVersion:
+      raw.writingMeasureVersion === undefined
+        ? 1
+        : requireInteger(settings.writingMeasureVersion, 1, 2, "settings.writingMeasureVersion"),
+    diaryLayout,
   };
 }
 
@@ -780,6 +833,13 @@ function validateNullableAuditEnum(value, allowed, label) {
   return value;
 }
 
+function validateNullableAuditState(value, label) {
+  if (value === null) return null;
+  const normalized = LEGACY_CIRCUMSPECTION_STATE_ALIASES.get(value) || value;
+  if (!CIRCUMSPECTION_STATES.has(normalized)) invalidCircumspection(`${label} is invalid`);
+  return normalized;
+}
+
 function validateNullableAuditInteger(value, label) {
   if (value === null) return null;
   return requireInteger(value, 0, Number.MAX_SAFE_INTEGER, label);
@@ -802,12 +862,8 @@ function validateCircumspectionAuditEvent(raw, ids, index) {
     entryId: requireNullableId(raw.entryId, `${label}.entryId`),
     threadId: requireNullableId(raw.threadId, `${label}.threadId`),
     mode: validateNullableAuditEnum(raw.mode, CIRCUMSPECTION_MODES, `${label}.mode`),
-    sourceState: validateNullableAuditEnum(raw.sourceState, CIRCUMSPECTION_STATES, `${label}.sourceState`),
-    destinationState: validateNullableAuditEnum(
-      raw.destinationState,
-      CIRCUMSPECTION_STATES,
-      `${label}.destinationState`
-    ),
+    sourceState: validateNullableAuditState(raw.sourceState, `${label}.sourceState`),
+    destinationState: validateNullableAuditState(raw.destinationState, `${label}.destinationState`),
     ruleId,
     contentLength: validateNullableAuditInteger(raw.contentLength, `${label}.contentLength`),
     settledUntil: validateNullableAuditInteger(raw.settledUntil, `${label}.settledUntil`),
@@ -1008,9 +1064,14 @@ async function handleVersionControlApi(req, res) {
       return sendError(res, 400, "enabled must be boolean");
     }
     const settings = await readSettings();
+    let stopRecorded = null;
+    let reason = null;
     if (body.enabled) {
       try {
-        await ensureGitHistory();
+        const { createdHistory } = await ensureGitHistory();
+        if (settings.gitVersioningEnabled !== true && !createdHistory) {
+          await commitGitSnapshot("Resume Filum thread history", nowIso(), true);
+        }
       } catch (error) {
         return sendJson(res, 424, {
           error:
@@ -1021,6 +1082,14 @@ async function handleVersionControlApi(req, res) {
                 : "Git history could not be initialized",
         });
       }
+    } else if (settings.gitVersioningEnabled === true) {
+      try {
+        stopRecorded = await recordGitStopBoundary();
+      } catch (error) {
+        stopRecorded = false;
+        reason = "Tracking was stopped, but its final Git marker could not be committed";
+        console.warn("[filum] Git tracking stopped without its final marker:", error.message);
+      }
     }
     const saved = sanitizeSettings({ ...settings, gitVersioningEnabled: body.enabled });
     if (!saved) return sendError(res, 400, "invalid settings");
@@ -1029,7 +1098,8 @@ async function handleVersionControlApi(req, res) {
       enabled: saved.gitVersioningEnabled,
       available: true,
       initialized: body.enabled ? true : (await exactGitRoot()) === path.resolve(DATA_DIR),
-      reason: null,
+      stopRecorded,
+      reason,
     });
   }
   res.writeHead(405, { allow: "GET, PUT" });

@@ -148,13 +148,52 @@ test("Circumspection persistence API", async (t) => {
           outwardPolicy: "fast-settle",
           liveInkOpacity: 0.7,
           writingSizePx: 19,
-          writingMeasureCh: 62,
+          writingMeasureCh: 74,
+          writingMeasureVersion: 2,
+          diaryLayout: "simple-musky",
         },
         activeEntryId: null,
         entries: [],
         audit: [],
       });
       await assert.rejects(fs.access(storePath), { code: "ENOENT" });
+    });
+
+    await t.test("GET normalizes legacy settings and lowercase audit states", async () => {
+      await resetStore();
+      const legacy = await defaultStore();
+      delete legacy.settings.inkEffect;
+      delete legacy.settings.liveInkOpacity;
+      delete legacy.settings.writingSizePx;
+      delete legacy.settings.writingMeasureCh;
+      delete legacy.settings.writingMeasureVersion;
+      delete legacy.settings.diaryLayout;
+      legacy.audit = [
+        {
+          ...makeAuditEvent(1),
+          event: "CIRCUMSPECTION_ROUTE_RESOLVED",
+          sourceState: null,
+          destinationState: "writing",
+        },
+        {
+          ...makeAuditEvent(2),
+          event: "OUTWARD_REQUESTED",
+          sourceState: "writing",
+          destinationState: "OUTWARD_PENDING",
+        },
+      ];
+      await fs.writeFile(storePath, JSON.stringify(legacy), "utf8");
+
+      const result = await request(baseUrl, "/api/circumspection");
+      assert.equal(result.status, 200);
+      assert.equal(result.body.settings.inkEffect, "none");
+      assert.equal(result.body.settings.liveInkOpacity, 0.7);
+      assert.equal(result.body.settings.writingSizePx, 19);
+      assert.equal(result.body.settings.writingMeasureCh, 74);
+      assert.equal(result.body.settings.writingMeasureVersion, 1);
+      assert.equal(result.body.settings.diaryLayout, "simple-musky");
+      assert.equal(result.body.audit[0].destinationState, "LIVING_PAGE");
+      assert.equal(result.body.audit[1].sourceState, "LIVING_PAGE");
     });
 
     await t.test("PUT round-trips canonical content that is still visually pending", async () => {

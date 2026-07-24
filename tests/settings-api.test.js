@@ -4,10 +4,12 @@ const fs = require("node:fs/promises");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { once } = require("node:events");
+const { promisify } = require("node:util");
 
 const ROOT = path.resolve(__dirname, "..");
+const execFileAsync = promisify(execFile);
 
 function availablePort() {
   return new Promise((resolve, reject) => {
@@ -20,10 +22,14 @@ function availablePort() {
   });
 }
 
-async function request(baseUrl, options = {}) {
-  const response = await fetch(`${baseUrl}/api/settings`, options);
+async function requestPath(baseUrl, pathname, options = {}) {
+  const response = await fetch(`${baseUrl}${pathname}`, options);
   const raw = await response.text();
   return { status: response.status, body: raw ? JSON.parse(raw) : null };
+}
+
+function request(baseUrl, options = {}) {
+  return requestPath(baseUrl, "/api/settings", options);
 }
 
 function put(body) {
@@ -130,6 +136,85 @@ test("general settings API", async (t) => {
       assert.equal(saved.status, 200);
       assert.deepEqual(saved.body, desired);
       assert.deepEqual((await request(baseUrl)).body, desired);
+    });
+
+    await t.test("Git tracking can start and stop with a dated boundary commit", async () => {
+      const valid = {
+        schemaVersion: 1,
+        noteAliases: ["note"],
+        noteColor: "#6f5f80",
+        interfaceContrast: "rich",
+        textScale: 1,
+        spacing: "calm",
+        interfaceMotion: "full",
+        keyboardAssistedNavigation: true,
+        gitVersioningEnabled: false,
+      };
+      assert.equal((await request(baseUrl, put(valid))).status, 200);
+
+      const enabled = await requestPath(
+        baseUrl,
+        "/api/version-control",
+        put({ enabled: true })
+      );
+      assert.equal(enabled.status, 200);
+      assert.equal(enabled.body.enabled, true);
+
+      const stopped = await requestPath(
+        baseUrl,
+        "/api/version-control",
+        put({ enabled: false })
+      );
+      assert.equal(stopped.status, 200);
+      assert.equal(stopped.body.enabled, false);
+      assert.equal(stopped.body.stopRecorded, true);
+      assert.equal((await request(baseUrl)).body.gitVersioningEnabled, false);
+
+      const resumed = await requestPath(
+        baseUrl,
+        "/api/version-control",
+        put({ enabled: true })
+      );
+      assert.equal(resumed.status, 200);
+      const stoppedAgain = await requestPath(
+        baseUrl,
+        "/api/version-control",
+        put({ enabled: false })
+      );
+      assert.equal(stoppedAgain.status, 200);
+      assert.equal(stoppedAgain.body.stopRecorded, true);
+
+      const { stdout } = await execFileAsync(
+        "git",
+        [
+          "-c",
+          `safe.directory=${dataDir}`,
+          "-C",
+          dataDir,
+          "log",
+          "-1",
+          "--format=%s%n%aI%n%cI",
+        ]
+      );
+      const [subject, authorDate, committerDate] = stdout.trim().split("\n");
+      assert.match(
+        subject,
+        /stopped tracking the shadows behind me, as enroute git was scared of seeing my soul$/
+      );
+      assert.equal(authorDate, committerDate);
+      const { stdout: boundarySubjects } = await execFileAsync(
+        "git",
+        [
+          "-c",
+          `safe.directory=${dataDir}`,
+          "-C",
+          dataDir,
+          "log",
+          "-2",
+          "--format=%s",
+        ]
+      );
+      assert.match(boundarySubjects, /Resume Filum thread history/);
     });
 
     await t.test("invalid values are rejected without changing the prior file", async () => {

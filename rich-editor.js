@@ -18,6 +18,16 @@
     return href;
   }
 
+  function threadReferenceHtml(label, id) {
+    const safeLabel = escapeHtml(label);
+    return `<span class="thread-reference thread-reference--editable"
+      data-thread-ref="${escapeHtml(id)}" data-thread-label="${safeLabel}" contenteditable="false">
+      <button class="thread-reference-remove" type="button"
+        data-thread-ref-remove aria-label="Remove @${safeLabel} reference">×</button>
+      <span class="thread-reference-label">@${safeLabel}</span>
+    </span>`;
+  }
+
   function inlineMarkdown(raw) {
     const tokens = [];
     const stash = (html) => {
@@ -28,10 +38,7 @@
 
     text = text.replace(
       /@\[([^\]]+)\]\(filum:thread\/([a-z0-9-]{8,64})\)/gi,
-      (_match, label, id) =>
-        stash(
-          `<span class="thread-reference" data-thread-ref="${escapeHtml(id)}" contenteditable="false">@${escapeHtml(label)}</span>`
-        )
+      (_match, label, id) => stash(threadReferenceHtml(label, id))
     );
     text = text.replace(/`([^`\n]+)`/g, (_match, body) =>
       stash(`<code>${escapeHtml(body)}</code>`)
@@ -114,12 +121,23 @@
     const inner = Array.from(node.childNodes).map(inlineFromNode).join("");
     if (node.matches("[data-thread-ref]")) {
       const id = node.dataset.threadRef || "";
-      const label = node.textContent.replace(/^@/, "") || "Thread";
+      const label =
+        node.dataset.threadLabel ||
+        node.querySelector(".thread-reference-label")?.textContent.replace(/^@/, "") ||
+        "Thread";
       return `@[${label}](filum:thread/${id})`;
     }
     if (node.tagName === "STRONG" || node.tagName === "B") return `**${inner}**`;
     if (node.tagName === "EM" || node.tagName === "I") return `*${inner}*`;
     if (node.tagName === "U") return `__${inner}__`;
+    if (node.tagName === "SPAN") {
+      let marked = inner;
+      const weight = node.style.fontWeight;
+      if (weight === "bold" || Number.parseInt(weight, 10) >= 600) marked = `**${marked}**`;
+      if (node.style.fontStyle === "italic") marked = `*${marked}*`;
+      if (node.style.textDecorationLine.includes("underline")) marked = `__${marked}__`;
+      return marked;
+    }
     if (node.tagName === "CODE" && node.parentElement?.tagName !== "PRE") return `\`${inner}\``;
     if (node.tagName === "A") {
       const href = safeHref(node.getAttribute("href"));
@@ -170,6 +188,7 @@
       this.source = source;
       this.options = options;
       this.savedLinkRange = null;
+      this.savedCommandRange = null;
       this.mentionIndex = 0;
       this.mentionItems = [];
       this.isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -187,6 +206,12 @@
         this.wrapper.appendChild(source);
         this.wrapper.appendChild(this.root);
         source.classList.add("rich-source");
+        // The source may live inside an implicit <label>. Keep it available as
+        // the canonical form value, but remove it from interaction so a click
+        // on the visible editor cannot be redirected to this hidden textarea.
+        source.inert = true;
+        source.tabIndex = -1;
+        source.setAttribute("aria-hidden", "true");
       } else {
         this.root = source;
         this.root.contentEditable = source.getAttribute("aria-readonly") === "true" ? "false" : "true";
@@ -226,9 +251,13 @@
         <button type="button" data-rich-command="italic" aria-label="Italic" aria-pressed="false"><em>I</em></button>
         <button type="button" data-rich-command="underline" aria-label="Underline" aria-pressed="false"><u>U</u></button>
         <span class="rich-toolbar-divider" aria-hidden="true"></span>
-        <button type="button" data-rich-command="insertUnorderedList" aria-label="Bulleted list" aria-pressed="false">• List</button>
-        <button type="button" data-rich-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false">1. List</button>
-        <button type="button" data-rich-link aria-label="Add hyperlink">Link</button>
+        <button type="button" data-rich-command="insertUnorderedList" aria-label="Bulleted list" aria-pressed="false">•</button>
+        <button type="button" data-rich-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false">1.</button>
+        <button type="button" data-rich-link aria-label="Add hyperlink">
+          <svg class="rich-link-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9.5 7H7a5 5 0 0 0 0 10h2.5m5-10H17a5 5 0 0 1 0 10h-2.5M8 12h8"></path>
+          </svg>
+        </button>
         <div class="rich-link-panel" hidden>
           <input type="url" inputmode="url" placeholder="https://…" aria-label="Link address">
           <button type="button" data-rich-link-apply>Apply</button>
@@ -252,11 +281,25 @@
         document.execCommand("insertText", false, text);
       });
       this.root.addEventListener("click", (event) => {
+        const remove = event.target.closest("[data-thread-ref-remove]");
+        if (remove) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.removeThreadReference(remove.closest("[data-thread-ref]"));
+          return;
+        }
         const reference = event.target.closest("[data-thread-ref]");
         if (reference) this.options.onThreadReference?.(reference.dataset.threadRef);
       });
+      this.root.addEventListener("mousedown", (event) => {
+        if (event.target.closest("[data-thread-ref-remove]")) event.preventDefault();
+      });
       this.toolbar.addEventListener("mousedown", (event) => {
         if (event.target.closest("button") && !event.target.closest(".rich-link-panel")) {
+          const selection = window.getSelection();
+          if (selection?.rangeCount && selectionInside(this.root)) {
+            this.savedCommandRange = selection.getRangeAt(0).cloneRange();
+          }
           event.preventDefault();
         }
       });
@@ -275,6 +318,15 @@
       const primary = this.isMac ? event.metaKey : event.ctrlKey;
       if (primary && !event.altKey) {
         const key = event.key.toLowerCase();
+        if (key === "a") {
+          event.preventDefault();
+          const range = document.createRange();
+          range.selectNodeContents(this.root);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return;
+        }
         const command = key === "b" ? "bold" : key === "i" ? "italic" : key === "u" ? "underline" : null;
         if (command) {
           event.preventDefault();
@@ -296,6 +348,10 @@
           this.command("insertUnorderedList");
           return;
         }
+      }
+      if ((event.key === "Backspace" || event.key === "Delete") && this.deleteSelectedContent()) {
+        event.preventDefault();
+        return;
       }
       if (!this.mentionMenu.hidden) {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -330,9 +386,34 @@
     }
 
     command(command) {
+      const selection = window.getSelection();
+      const activeRange =
+        this.savedCommandRange ||
+        (selection?.rangeCount && selectionInside(this.root)
+          ? selection.getRangeAt(0).cloneRange()
+          : null);
       this.root.focus({ preventScroll: true });
-      document.execCommand(command, false);
-      this.syncSource();
+      if (
+        activeRange &&
+        selection &&
+        this.root.contains(activeRange.startContainer) &&
+        this.root.contains(activeRange.endContainer)
+      ) {
+        selection.removeAllRanges();
+        selection.addRange(activeRange);
+      }
+      this.savedCommandRange = null;
+      const before = this.getMarkdown();
+      document.execCommand("styleWithCSS", false, false);
+      document.execCommand(command, false, null);
+      const after = this.getMarkdown();
+      if (after !== before) {
+        this.root.dispatchEvent(
+          new InputEvent("input", { bubbles: true, inputType: `format${command}` })
+        );
+      } else {
+        this.syncSource();
+      }
       this.updateToolbar();
     }
 
@@ -351,6 +432,7 @@
     }
 
     openLinkPanel() {
+      this.savedCommandRange = null;
       const selection = window.getSelection();
       if (selection?.rangeCount && selectionInside(this.root)) {
         this.savedLinkRange = selection.getRangeAt(0).cloneRange();
@@ -454,11 +536,9 @@
       range.setStart(this.mentionRange.node, this.mentionRange.start);
       range.setEnd(this.mentionRange.node, this.mentionRange.end);
       range.deleteContents();
-      const chip = document.createElement("span");
-      chip.className = "thread-reference";
-      chip.dataset.threadRef = id;
-      chip.contentEditable = "false";
-      chip.textContent = `@${name}`;
+      const holder = document.createElement("div");
+      holder.innerHTML = threadReferenceHtml(name, id);
+      const chip = holder.firstElementChild;
       const space = document.createTextNode(" ");
       range.insertNode(space);
       range.insertNode(chip);
@@ -470,6 +550,49 @@
       this.closeMentionMenu();
       this.syncSource();
       this.root.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    }
+
+    removeThreadReference(reference) {
+      if (!reference || !this.root.contains(reference)) return;
+      const parent = reference.parentNode;
+      const next = reference.nextSibling;
+      reference.remove();
+      this.root.focus({ preventScroll: true });
+      if (parent?.isConnected) {
+        const range = document.createRange();
+        if (next?.isConnected) range.setStartBefore(next);
+        else range.setStart(parent, parent.childNodes.length);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      this.root.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" })
+      );
+    }
+
+    deleteSelectedContent() {
+      const selection = window.getSelection();
+      if (
+        !selection?.rangeCount ||
+        selection.isCollapsed ||
+        !this.root.contains(selection.anchorNode) ||
+        !this.root.contains(selection.focusNode)
+      ) {
+        return false;
+      }
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      if (!this.root.childNodes.length) this.root.innerHTML = "<p><br></p>";
+      range.selectNodeContents(this.root);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      this.root.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" })
+      );
+      return true;
     }
 
     getMarkdown() {

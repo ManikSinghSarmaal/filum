@@ -22,7 +22,9 @@
       outwardPolicy: "fast-settle",
       liveInkOpacity: 0.7,
       writingSizePx: 19,
-      writingMeasureCh: 62,
+      writingMeasureCh: 74,
+      writingMeasureVersion: 2,
+      diaryLayout: "simple-musky",
     },
     activeEntryId: null,
     entries: [],
@@ -130,14 +132,16 @@
   }
 
   async function loadStore() {
-    const mirror = normalizeStore(readMirror()) || clone(DEFAULT_STORE);
-    store = mirror;
+    const mirror = normalizeStore(readMirror());
+    store = mirror || clone(DEFAULT_STORE);
+    let serverNeedsSync = false;
     try {
       const response = await fetch("/api/circumspection", { headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`Circumspection load failed (${response.status})`);
       const loaded = normalizeStore(await response.json());
       if (!loaded) throw new Error("Circumspection store was not valid");
-      store = loaded;
+      store = mirror ? reconcileStores(loaded, mirror) : loaded;
+      serverNeedsSync = mirror ? JSON.stringify(store) !== JSON.stringify(loaded) : false;
       serverWritable = true;
       writeMirror();
     } catch (error) {
@@ -146,10 +150,39 @@
       recordAudit("SAVE_FELL_BACK_OFFLINE", { destinationState: "OFFLINE_MIRRORED" });
       writeMirror();
     }
-    const migrated = migrateLegacyBlankEntries();
+    const migratedBlankEntries = migrateLegacyBlankEntries();
+    const migratedWritingMeasure = migrateWritingMeasure();
     currentEntryId = store.activeEntryId;
     applyCircAppearance();
-    if (migrated) markStoreDirty(true);
+    if (serverNeedsSync || migratedBlankEntries || migratedWritingMeasure) markStoreDirty(true);
+  }
+
+  function reconcileStores(serverStore, mirrorStore) {
+    const entriesById = new Map(serverStore.entries.map((entry) => [entry.id, entry]));
+    for (const mirrorEntry of mirrorStore.entries) {
+      const serverEntry = entriesById.get(mirrorEntry.id);
+      if (!serverEntry || mirrorEntry.updatedAt >= serverEntry.updatedAt) {
+        entriesById.set(mirrorEntry.id, mirrorEntry);
+      }
+    }
+    const entries = [...entriesById.values()];
+    const activeCandidates = [mirrorStore.activeEntryId, serverStore.activeEntryId];
+    const activeEntryId =
+      activeCandidates.find((id) =>
+        id && entries.some((entry) => entry.id === id && entry.status !== "binned")
+      ) || null;
+    const auditById = new Map(serverStore.audit.map((event) => [event.id, event]));
+    mirrorStore.audit.forEach((event) => auditById.set(event.id, event));
+    const audit = [...auditById.values()]
+      .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
+      .slice(-MAX_AUDIT);
+    return {
+      schemaVersion: 1,
+      settings: mirrorStore.settings,
+      activeEntryId,
+      entries,
+      audit,
+    };
   }
 
   function migrateLegacyBlankEntries() {
@@ -166,10 +199,18 @@
     return true;
   }
 
+  function migrateWritingMeasure() {
+    if (store.settings.writingMeasureVersion >= 2) return false;
+    if (store.settings.writingMeasureCh === 62) store.settings.writingMeasureCh = 74;
+    store.settings.writingMeasureVersion = 2;
+    return true;
+  }
+
   function applyCircAppearance() {
+    const writingMeasure = store.settings.diaryLayout === "wider-musky" ? 88 : 74;
     el.circRoot.style.setProperty("--circ-live-opacity", String(store.settings.liveInkOpacity));
     el.circRoot.style.setProperty("--circ-writing-size", `${store.settings.writingSizePx}px`);
-    el.circRoot.style.setProperty("--circ-measure", `${store.settings.writingMeasureCh}ch`);
+    el.circRoot.style.setProperty("--circ-measure", `${writingMeasure}ch`);
     el.circRoot.dataset.motion = store.settings.pageMotion;
     el.circRoot.dataset.inkEffect = store.settings.inkEffect;
   }
@@ -209,7 +250,13 @@
         outwardPolicy: "fast-settle",
         liveInkOpacity: boundedNumber(settings.liveInkOpacity, 0.35, 1, 0.7),
         writingSizePx: boundedNumber(settings.writingSizePx, 16, 24, 19),
-        writingMeasureCh: boundedNumber(settings.writingMeasureCh, 48, 78, 62),
+        writingMeasureCh: boundedNumber(settings.writingMeasureCh, 48, 96, 74),
+        writingMeasureVersion: boundedInteger(settings.writingMeasureVersion, 1, 2, 1),
+        diaryLayout: ["simple-musky", "wider-musky"].includes(raw.settings.diaryLayout)
+          ? raw.settings.diaryLayout
+          : boundedNumber(raw.settings.writingMeasureCh, 48, 96, 74) >= 84
+            ? "wider-musky"
+            : "simple-musky",
       },
       activeEntryId,
       entries,
@@ -253,8 +300,8 @@
       entryId: validId(raw.entryId) ? raw.entryId : null,
       threadId: validId(raw.threadId) ? raw.threadId : null,
       mode: typeof raw.mode === "string" ? raw.mode : null,
-      sourceState: typeof raw.sourceState === "string" ? raw.sourceState : null,
-      destinationState: typeof raw.destinationState === "string" ? raw.destinationState : null,
+      sourceState: normalizeAuditState(raw.sourceState),
+      destinationState: normalizeAuditState(raw.destinationState),
       ruleId: typeof raw.ruleId === "string" ? raw.ruleId : null,
       contentLength: Number.isInteger(raw.contentLength) ? raw.contentLength : null,
       settledUntil: Number.isInteger(raw.settledUntil) ? raw.settledUntil : null,
@@ -262,6 +309,17 @@
       metadata: isObject(raw.metadata) ? raw.metadata : {},
       occurredAt: validDate(raw.occurredAt) ? raw.occurredAt : now(),
     };
+  }
+
+  function normalizeAuditState(value) {
+    if (typeof value !== "string") return null;
+    return {
+      writing: "LIVING_PAGE",
+      reading: "EARLIER_LEAF_READING",
+      revision: "REVISION_ACTIVE",
+      catalogue: "CATALOGUE",
+      outer: "FILUM_OUTER",
+    }[value] || value;
   }
 
   function readMirror() {
@@ -481,6 +539,7 @@
   }
 
   function showWriting() {
+    el.circRoot.dataset.view = "writing";
     el.circWritingView.hidden = false;
     el.circCatalogueView.hidden = true;
   }
@@ -489,6 +548,7 @@
     enterInner();
     catalogueScope = "active";
     currentView = "catalogue";
+    el.circRoot.dataset.view = "catalogue";
     mode = "catalogue";
     hideDeleteConfirmation();
     el.circWritingView.hidden = true;
@@ -533,6 +593,10 @@
 
   function handleFieldPointer(event) {
     if (event.target.closest("button")) return;
+    if (event.target.closest(".rich-toolbar, .rich-mention-menu")) return;
+    // Let the browser preserve the exact pointer-derived caret or selection
+    // when the user interacts with the editable surface itself.
+    if (event.target === el.circInput || el.circInput.contains(event.target)) return;
     if (mode === "revision") el.circRevisionInput.focus({ preventScroll: true });
     else if (store.settings.inkEffect === "none") el.circInput.focus({ preventScroll: true });
     else if (mode === "writing") focusAppend();
@@ -1134,7 +1198,7 @@
           ? entry.status === "binned"
           : entry.status !== "binned" && Boolean(entry.content.trim())
       )
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     const hasBlankDraft = store.entries.some(
       (entry) => entry.status === "active" && !entry.content.trim()
     );
@@ -1153,15 +1217,25 @@
       const leaves = pagesFor(entry).length;
       const excerpt = excerptFor(entry.content);
       return `<article class="circ-entry">
-        <p class="circ-entry-date">${escapeHtml(formatDate(entry.createdAt))}</p>
-        <p class="circ-entry-excerpt">${escapeHtml(excerpt || "An unwritten leaf")}</p>
-        <p class="circ-entry-meta">Updated ${escapeHtml(relativeTime(entry.updatedAt))} · ${words} ${words === 1 ? "word" : "words"} · about ${leaves} ${leaves === 1 ? "leaf" : "leaves"}</p>
+        ${
+          catalogueScope === "binned"
+            ? `<div class="circ-entry-main">
+                 <span class="circ-entry-date">${escapeHtml(formatDate(entry.updatedAt))}</span>
+                 <span class="circ-entry-excerpt">${escapeHtml(excerpt || "An unwritten leaf")}</span>
+                 <span class="circ-entry-meta">${words} ${words === 1 ? "word" : "words"} · about ${leaves} ${leaves === 1 ? "leaf" : "leaves"}</span>
+               </div>`
+            : `<button class="circ-entry-main" type="button" data-circ-read="${entry.id}"
+                       aria-label="Open Circumspection entry edited ${escapeHtml(formatDate(entry.updatedAt))}">
+                 <span class="circ-entry-date">${escapeHtml(formatDate(entry.updatedAt))}</span>
+                 <span class="circ-entry-excerpt">${escapeHtml(excerpt || "An unwritten leaf")}</span>
+                 <span class="circ-entry-meta">${words} ${words === 1 ? "word" : "words"} · about ${leaves} ${leaves === 1 ? "leaf" : "leaves"}</span>
+               </button>`
+        }
         <div class="circ-entry-actions">
           ${
             catalogueScope === "binned"
               ? `<button class="circ-text-control" type="button" data-circ-restore="${entry.id}">Restore</button>`
-              : `<button class="circ-text-control" type="button" data-circ-read="${entry.id}">Read</button>
-                 <button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
+              : `<button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
                    aria-label="Move this note to the Circumspection bin" title="Move to bin">
                    <svg viewBox="0 0 24 24" aria-hidden="true">
                      <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"></path>
@@ -1301,8 +1375,12 @@
         <input id="circPrefWritingSize" type="range" min="16" max="24" step="1" value="${settings.writingSizePx}" data-circ-setting="writingSizePx">
       </div>
       <div class="circ-pref-field">
-        <label for="circPrefMeasure"><span>Writing measure</span><output data-circ-output="writingMeasureCh">${settingValueLabel("writingMeasureCh", settings.writingMeasureCh)}</output></label>
-        <input id="circPrefMeasure" type="range" min="48" max="78" step="2" value="${settings.writingMeasureCh}" data-circ-setting="writingMeasureCh">
+        <label for="circPrefDiaryLayout">Diary width</label>
+        <select id="circPrefDiaryLayout" data-circ-setting="diaryLayout">
+          <option value="simple-musky" ${settings.diaryLayout === "simple-musky" ? "selected" : ""}>simple musky diary</option>
+          <option value="wider-musky" ${settings.diaryLayout === "wider-musky" ? "selected" : ""}>wider musky diary :)</option>
+        </select>
+        <small>Both layouts stay centred; the wider diary opens equally to the left and right.</small>
       </div>
       <div class="circ-pref-field">
         <label for="circPrefPaste">Paste behavior</label>
@@ -1325,6 +1403,9 @@
         let value = control.type === "range" ? Number(control.value) : control.value;
         if (control.dataset.circTransform === "percent") value /= 100;
         store.settings[key] = value;
+        if (key === "diaryLayout") {
+          store.settings.writingMeasureCh = value === "wider-musky" ? 88 : 74;
+        }
         const output = root.querySelector(`[data-circ-output="${key}"]`);
         if (output) output.textContent = settingValueLabel(key, value);
         applyCircAppearance();
@@ -1350,13 +1431,6 @@
   function excerptFor(content) { return content.replace(/\s+/gu, " ").trim().slice(0, 120); }
   function wordCount(content) { return (content.trim().match(/\S+/gu) || []).length; }
   function formatDate(value) { return new Date(value).toLocaleString([], { dateStyle: "long", timeStyle: "short" }); }
-  function relativeTime(value) {
-    const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1000));
-    if (seconds < 60) return "moments ago";
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
-    return new Date(value).toLocaleDateString();
-  }
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
   function isObject(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
   function validId(value) { return typeof value === "string" && /^[a-z0-9-]{8,64}$/i.test(value); }
