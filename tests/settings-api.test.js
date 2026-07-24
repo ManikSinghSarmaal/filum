@@ -83,6 +83,8 @@ test("general settings API", async (t) => {
         textScale: 1,
         spacing: "calm",
         interfaceMotion: "full",
+        keyboardAssistedNavigation: true,
+        gitVersioningEnabled: false,
       });
     });
 
@@ -106,6 +108,8 @@ test("general settings API", async (t) => {
         textScale: 1,
         spacing: "calm",
         interfaceMotion: "full",
+        keyboardAssistedNavigation: true,
+        gitVersioningEnabled: false,
       });
     });
 
@@ -119,6 +123,8 @@ test("general settings API", async (t) => {
         textScale: 1.2,
         spacing: "open",
         interfaceMotion: "quiet",
+        keyboardAssistedNavigation: false,
+        gitVersioningEnabled: true,
       };
       const saved = await request(baseUrl, put(desired));
       assert.equal(saved.status, 200);
@@ -135,6 +141,8 @@ test("general settings API", async (t) => {
         textScale: 1,
         spacing: "calm",
         interfaceMotion: "full",
+        keyboardAssistedNavigation: true,
+        gitVersioningEnabled: false,
       };
       assert.equal((await request(baseUrl, put(valid))).status, 200);
       const before = await fs.readFile(settingsPath, "utf8");
@@ -148,6 +156,8 @@ test("general settings API", async (t) => {
         { ...valid, spacing: "spacious" },
         { ...valid, interfaceMotion: "reduced" },
         { ...valid, interfaceMotion: "spinning" },
+        { ...valid, keyboardAssistedNavigation: "yes" },
+        { ...valid, gitVersioningEnabled: 1 },
       ];
       for (const invalid of invalidVariants) {
         const result = await request(baseUrl, put(invalid));

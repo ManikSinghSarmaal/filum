@@ -14,16 +14,24 @@ Circumspection is Filum's independent private writing space. Open it from the
 compact book control in the top bar, or use the adjacent three strokes to open
 the global Catalogue.
 
-Writing is direct: text and the native caret remain visible at input speed.
-Click any word to edit it in place, including words on earlier leaves. Page
-breaks can be added with **Turn the leaf** or `Cmd/Ctrl+Enter`, and every leaf
-can be deleted through an explicit confirmation. Entries have no titles and
+Writing is direct: text and the caret remain visible at input speed. A compact
+rich-text bar stays above the diary, while task-note controls stay below the
+input near the caret. Both provide bold, italic, underline, lists, and labelled
+links without asking the writer to remember markup. Click any word to edit it
+in place, including words on earlier leaves. Page breaks can be added at the
+caret with **Turn the leaf** or `Cmd/Ctrl+Enter`. Entries have no titles and
 remain independent from Filum threads.
 
-All personalisation lives in the main **Preferences** panel. The v1.1 writing
-model uses `Ink effect: None`, with no delayed reveal, blur, or post-text
-animation. Circumspection is designed and tested desktop/web-first; responsive
-mobile layouts remain available as a secondary path.
+The Catalogue is a wide typographic list: opening an entry reads and edits in
+one place, while its bin control moves it to a recoverable local bin. Filum
+keeps at most one blank entry and creates the next leaf only when writing
+reaches it or the writer deliberately turns at the caret.
+
+Basic defaults live in **Preferences**; **Personalise for me** opens the larger
+customisation surface. The direct writing model uses `Ink effect: None`, with
+no delayed reveal, blur, or post-text animation. Circumspection is
+desktop/web-first; responsive mobile layouts remain available as a secondary
+path.
 
 ## A quick look
 
@@ -33,7 +41,7 @@ mobile layouts remain available as a secondary path.
 
 You need:
 
-- A Unix/Linux based system, or macOS
+- Windows, macOS, or a Unix/Linux based system
 - Node.js `18` or newer
 
 
@@ -54,6 +62,13 @@ On macOS with Homebrew:
 
 ```bash
 brew install git node
+node --version
+```
+
+On Windows with PowerShell and WinGet:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
 node --version
 ```
 
@@ -103,6 +118,13 @@ localStorage: filum:circumspection:v1
 Deleting or archiving a thread does not delete its independent Circumspection
 entries. Global Personalisation settings are stored in
 `~/.filum/settings.json`.
+
+Filum can optionally initialise a Git repository inside `~/.filum` from
+**Personalise for me**. Only thread JSON in `threads/`, `archive/`, and `bin/`
+is tracked. Each edit retains the original text date as its Git author date
+while recording the actual save time as the committer date. Git is optional:
+ordinary JSON persistence remains the source of truth and continues if Git is
+unavailable.
 
 To use a custom storage directory:
 
