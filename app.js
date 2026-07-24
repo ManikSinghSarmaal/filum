@@ -189,6 +189,20 @@ const storage = {
     if (!res.ok) throw new Error(`search failed: ${res.status}`);
     return res.json();
   },
+  async configureVersioning(enabled) {
+    const res = await fetch("/api/version-control", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(body.error || `version control failed: ${res.status}`);
+      error.userMessage = body.error;
+      throw error;
+    }
+    return body;
+  },
 };
 
 installCircumspectionBridge();
@@ -3144,9 +3158,22 @@ function bindPrefsPanel(root) {
       syncPrefsPanelValues();
     });
   });
-  gitInput?.addEventListener("change", () => {
-    appSettings.gitVersioningEnabled = gitInput.checked;
-    persistSettings({ renderApp: false });
+  gitInput?.addEventListener("change", async () => {
+    const requested = gitInput.checked;
+    gitInput.disabled = true;
+    try {
+      await storage.configureVersioning(requested);
+      appSettings.gitVersioningEnabled = requested;
+      saveSettingsMirror();
+      setStatus(requested ? "Git thread history is on" : "Git thread history is off");
+    } catch (error) {
+      appSettings.gitVersioningEnabled = !requested;
+      gitInput.checked = !requested;
+      setStatus(error.userMessage || "Git thread history remains unavailable");
+    } finally {
+      gitInput.disabled = false;
+      syncPrefsPanelValues();
+    }
   });
 }
 

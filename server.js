@@ -19,7 +19,10 @@ const fssync = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const { URL } = require("node:url");
+const execFileAsync = promisify(execFile);
 
 const PORT = Number(process.env.FILUM_PORT) || 4317;
 const DATA_DIR = process.env.FILUM_DATA_DIR || path.join(os.homedir(), ".filum");
@@ -39,6 +42,7 @@ const CIRCUMSPECTION_BODY_LIMIT = 64 * 1024 * 1024;
 const MAX_CIRCUMSPECTION_ENTRIES = 500;
 const MAX_CIRCUMSPECTION_CONTENT = 2_000_000;
 const MAX_CIRCUMSPECTION_AUDIT = 500;
+let gitCommitChain = Promise.resolve();
 
 // Scope name -> directory. A thread lives in exactly one of these at a time;
 // archive / delete / restore are atomic renames between them.
@@ -94,11 +98,15 @@ async function readThreadAt(filePath) {
   return JSON.parse(raw);
 }
 
-async function writeThreadAt(scope, thread) {
+async function writeThreadAt(scope, thread, history = {}) {
   const filePath = threadPathIn(scope, thread.id);
   const tmp = filePath + ".tmp";
   await fs.writeFile(tmp, JSON.stringify(thread, null, 2), "utf8");
   await fs.rename(tmp, filePath);
+  queueGitCommit(
+    history.message || `Update thread ${thread.id}`,
+    history.authorDate || thread.createdAt || nowIso()
+  );
 }
 
 async function listThreads(scope) {
@@ -181,6 +189,142 @@ async function searchThreads(query) {
     }
   }
   return results.sort((a, b) => b.score - a.score).slice(0, 100);
+}
+
+function dataLayoutSupportsGit() {
+  const root = path.resolve(DATA_DIR);
+  const inside = (target) => {
+    const resolved = path.resolve(target);
+    return resolved === root || resolved.startsWith(root + path.sep);
+  };
+  return inside(THREADS_DIR) && inside(ARCHIVE_DIR) && inside(BIN_DIR);
+}
+
+async function runGit(args, options = {}) {
+  return execFileAsync("git", args, {
+    cwd: DATA_DIR,
+    maxBuffer: 1024 * 1024,
+    ...options,
+  });
+}
+
+async function exactGitRoot() {
+  try {
+    const { stdout } = await runGit(["rev-parse", "--show-toplevel"]);
+    return path.resolve(stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
+async function ensureGitIdentity() {
+  for (const [key, value] of [
+    ["user.name", "Filum"],
+    ["user.email", "filum@localhost"],
+  ]) {
+    try {
+      await runGit(["config", "--local", "--get", key]);
+    } catch {
+      await runGit(["config", "--local", key, value]);
+    }
+  }
+}
+
+async function hasStagedGitChanges() {
+  try {
+    await runGit(["diff", "--cached", "--quiet"]);
+    return false;
+  } catch (error) {
+    if (error.code === 1) return true;
+    throw error;
+  }
+}
+
+async function ensureGitHistory() {
+  if (!dataLayoutSupportsGit()) {
+    const error = new Error(
+      "Git history needs FILUM_THREADS_DIR to remain inside FILUM_DATA_DIR"
+    );
+    error.code = "FILUM_SPLIT_DATA_LAYOUT";
+    throw error;
+  }
+  await runGit(["--version"]);
+  const alreadyInitialized = (await exactGitRoot()) === path.resolve(DATA_DIR);
+  if (!alreadyInitialized) {
+    await runGit(["init"]);
+  }
+  await ensureGitIdentity();
+  const ignore = [
+    "settings.json",
+    "circumspection.json",
+    "*.tmp",
+    "*.bak",
+    "*.bak-*",
+    "",
+  ].join("\n");
+  await fs.writeFile(path.join(DATA_DIR, ".gitignore"), ignore, "utf8");
+  if (!alreadyInitialized) {
+    await runGit(["add", "-A", "--", ".gitignore", "threads", "archive", "bin"]);
+  }
+  if (!alreadyInitialized && (await hasStagedGitChanges())) {
+    const timestamp = nowIso();
+    await runGit(["commit", "-m", "Start Filum thread history"], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: timestamp,
+        GIT_COMMITTER_DATE: timestamp,
+      },
+    });
+  }
+  return true;
+}
+
+async function gitVersioningEnabled() {
+  try {
+    return (await readSettings()).gitVersioningEnabled === true;
+  } catch {
+    return false;
+  }
+}
+
+function queueGitCommit(message, authorDate) {
+  gitCommitChain = gitCommitChain
+    .then(async () => {
+      if (!(await gitVersioningEnabled())) return false;
+      await ensureGitHistory();
+      await runGit(["add", "-A", "--", ".gitignore", "threads", "archive", "bin"]);
+      if (!(await hasStagedGitChanges())) return false;
+      const originalDate = isIsoTimestamp(authorDate) ? authorDate : nowIso();
+      await runGit(["commit", "-m", String(message).slice(0, 120)], {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: originalDate,
+          GIT_COMMITTER_DATE: nowIso(),
+        },
+      });
+      return true;
+    })
+    .catch((error) => {
+      console.warn("[filum] thread saved; Git history remained unavailable:", error.message);
+      return false;
+    });
+  return gitCommitChain;
+}
+
+function originalDateForThreadChange(existing, nextState) {
+  const before = new Map(
+    (Array.isArray(existing.state?.tasks) ? existing.state.tasks : [])
+      .filter((task) => task && typeof task.id === "string")
+      .map((task) => [task.id, task])
+  );
+  const changed = (Array.isArray(nextState?.tasks) ? nextState.tasks : []).filter((task) => {
+    if (!task || typeof task.id !== "string") return false;
+    return JSON.stringify(before.get(task.id)) !== JSON.stringify(task);
+  });
+  const dated = changed.find(
+    (task) => typeof task.createdAt === "string" && isIsoTimestamp(task.createdAt)
+  );
+  return dated?.createdAt || existing.createdAt || nowIso();
 }
 
 // ---- Settings --------------------------------------------------------------
@@ -834,6 +978,64 @@ async function handleSettingsApi(req, res) {
   res.end();
 }
 
+async function handleVersionControlApi(req, res) {
+  if (req.method === "GET") {
+    const settings = await readSettings();
+    let available = dataLayoutSupportsGit();
+    let initialized = false;
+    let reason = null;
+    if (available) {
+      try {
+        await runGit(["--version"]);
+        initialized = (await exactGitRoot()) === path.resolve(DATA_DIR);
+      } catch (error) {
+        available = false;
+        reason = error.code === "ENOENT" ? "Git is not installed" : error.message;
+      }
+    } else {
+      reason = "Active threads are stored outside FILUM_DATA_DIR";
+    }
+    return sendJson(res, 200, {
+      enabled: settings.gitVersioningEnabled === true,
+      available,
+      initialized,
+      reason,
+    });
+  }
+  if (req.method === "PUT") {
+    const body = await readJsonBody(req);
+    if (!body || typeof body.enabled !== "boolean") {
+      return sendError(res, 400, "enabled must be boolean");
+    }
+    const settings = await readSettings();
+    if (body.enabled) {
+      try {
+        await ensureGitHistory();
+      } catch (error) {
+        return sendJson(res, 424, {
+          error:
+            error.code === "ENOENT"
+              ? "Git is not installed"
+              : error.code === "FILUM_SPLIT_DATA_LAYOUT"
+                ? "Git history needs one FILUM_DATA_DIR"
+                : "Git history could not be initialized",
+        });
+      }
+    }
+    const saved = sanitizeSettings({ ...settings, gitVersioningEnabled: body.enabled });
+    if (!saved) return sendError(res, 400, "invalid settings");
+    await writeSettings(saved);
+    return sendJson(res, 200, {
+      enabled: saved.gitVersioningEnabled,
+      available: true,
+      initialized: body.enabled ? true : (await exactGitRoot()) === path.resolve(DATA_DIR),
+      reason: null,
+    });
+  }
+  res.writeHead(405, { allow: "GET, PUT" });
+  res.end();
+}
+
 async function handleCircumspectionApi(req, res) {
   if (req.method === "GET") {
     return sendJson(res, 200, await readCircumspectionStore());
@@ -865,6 +1067,7 @@ async function handleBinApi(req, res) {
       await fs.unlink(path.join(BIN_DIR, file));
       removed += 1;
     }
+    if (removed) queueGitCommit("Empty the Filum thread bin", nowIso());
     return sendJson(res, 200, { ok: true, removed });
   }
   res.writeHead(405, { allow: "DELETE" });
@@ -876,6 +1079,9 @@ async function handleApi(req, res, url) {
 
   if (segments[1] === "settings" && segments.length === 2) {
     return handleSettingsApi(req, res);
+  }
+  if (segments[1] === "version-control" && segments.length === 2) {
+    return handleVersionControlApi(req, res);
   }
   if (segments[1] === "search" && segments.length === 2) {
     if (req.method !== "GET") {
@@ -917,7 +1123,10 @@ async function handleApi(req, res, url) {
         state:
           body.state && typeof body.state === "object" ? body.state : emptyState(),
       };
-      await writeThreadAt("active", thread);
+      await writeThreadAt("active", thread, {
+        message: `Create thread ${thread.id}`,
+        authorDate: thread.createdAt,
+      });
       return sendJson(res, 201, { ...thread, scope: "active" });
     }
     res.writeHead(405, { allow: "GET, POST" });
@@ -935,7 +1144,9 @@ async function handleApi(req, res, url) {
     const located = await locateThread(id);
     if (!located) return sendError(res, 404, "thread not found");
     if (located.scope !== to) {
+      const thread = await readThreadAt(located.filePath);
       await fs.rename(located.filePath, threadPathIn(to, id));
+      queueGitCommit(`Move thread ${id} to ${to}`, thread.createdAt || nowIso());
     }
     return sendJson(res, 200, { ok: true, scope: to });
   }
@@ -971,7 +1182,10 @@ async function handleApi(req, res, url) {
       state:
         body.state && typeof body.state === "object" ? body.state : existing.state || emptyState(),
     };
-    await writeThreadAt(located.scope, thread);
+    await writeThreadAt(located.scope, thread, {
+      message: `Update thread ${id}`,
+      authorDate: originalDateForThreadChange(existing, thread.state),
+    });
     return sendJson(res, 200, { ...thread, scope: located.scope });
   }
 
@@ -981,7 +1195,9 @@ async function handleApi(req, res, url) {
     const located = await locateThread(id);
     if (!located) return sendError(res, 404, "thread not found");
     if (located.scope !== "bin") return sendError(res, 409, "move to the bin first");
+    const thread = await readThreadAt(located.filePath);
     await fs.unlink(located.filePath);
+    queueGitCommit(`Remove thread ${id} from the bin`, thread.createdAt || nowIso());
     return sendJson(res, 200, { ok: true });
   }
 
