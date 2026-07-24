@@ -35,7 +35,7 @@
     "circRevisionInput", "circPrevLeaf", "circNextLeaf", "circLeafPosition", "circRevise",
     "circTurnLeaf", "circDeleteLeaf", "circDeleteLeafConfirm", "circCancelDeleteLeaf",
     "circConfirmDeleteLeaf", "circRevisionActions", "circDiscardRevision", "circSettleRevision",
-    "circCatalogueView", "circCatalogueHeading", "circNewEntry", "circReturnLiving",
+    "circCatalogueView", "circCatalogueHeading", "circNewEntry", "circReturnLiving", "circBinButton",
     "circCatalogueList", "circLive",
   ];
   const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -47,6 +47,8 @@
   let store = clone(DEFAULT_STORE);
   let currentEntryId = null;
   let currentPageIndex = 0;
+  let displayedPageStart = 0;
+  let displayedPageEnd = 0;
   let currentView = "outer";
   let mode = "writing";
   let revisionSnapshot = null;
@@ -59,10 +61,14 @@
   let lastScheduledAt = 0;
   let historyDepth = 0;
   let renderingPreferences = false;
+  let catalogueScope = "active";
   const revealTimers = new Map();
   const scheduledEnds = new Set();
   const revealingEnds = new Set();
   const auditedPageBreaks = new Set();
+  const transientDraftIds = new Set();
+  const circEditor = window.FilumRichText?.enhance(el.circInput, { toolbarPosition: "top" });
+  if (!circEditor) return;
 
   let readyResolve;
   const ready = new Promise((resolve) => { readyResolve = resolve; });
@@ -110,6 +116,10 @@
     el.circSettleRevision.addEventListener("click", settleRevision);
     el.circNewEntry.addEventListener("click", () => openFreshEntry("new-entry", "R3"));
     el.circReturnLiving.addEventListener("click", returnToLivingPage);
+    el.circBinButton.addEventListener("click", () => {
+      catalogueScope = catalogueScope === "active" ? "binned" : "active";
+      renderCatalogue();
+    });
     el.circCatalogueList.addEventListener("click", handleCatalogueAction);
     window.addEventListener("filum:circumspection-preferences-render", renderPreferences);
     window.addEventListener("popstate", handleHistory);
@@ -136,8 +146,24 @@
       recordAudit("SAVE_FELL_BACK_OFFLINE", { destinationState: "OFFLINE_MIRRORED" });
       writeMirror();
     }
+    const migrated = migrateLegacyBlankEntries();
     currentEntryId = store.activeEntryId;
     applyCircAppearance();
+    if (migrated) markStoreDirty(true);
+  }
+
+  function migrateLegacyBlankEntries() {
+    const blanks = store.entries
+      .filter((entry) => entry.status === "active" && !entry.content.trim())
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    if (blanks.length < 2) return false;
+    blanks.slice(1).forEach((entry) => {
+      entry.status = "binned";
+    });
+    if (store.activeEntryId && blanks.slice(1).some((entry) => entry.id === store.activeEntryId)) {
+      store.activeEntryId = blanks[0].id;
+    }
+    return true;
   }
 
   function applyCircAppearance() {
@@ -160,7 +186,12 @@
       seen.add(entry.id);
       entries.push(entry);
     }
-    const activeEntryId = raw.activeEntryId === null || seen.has(raw.activeEntryId) ? raw.activeEntryId : null;
+    const activeEntryId =
+      raw.activeEntryId !== null &&
+      seen.has(raw.activeEntryId) &&
+      entries.some((entry) => entry.id === raw.activeEntryId && entry.status !== "binned")
+        ? raw.activeEntryId
+        : null;
     return {
       schemaVersion: 1,
       settings: {
@@ -203,7 +234,7 @@
       manualPageBreaks: [...breaks],
       lastMeaningfulAnchor: boundedInteger(raw.lastMeaningfulAnchor, 0, raw.content.length, raw.content.length),
       lastViewedAnchor: boundedInteger(raw.lastViewedAnchor, 0, raw.content.length, 0),
-      status: raw.status === "archived" ? "archived" : "active",
+      status: ["archived", "binned"].includes(raw.status) ? raw.status : "active",
       origin: {
         threadId: validId(raw.origin.threadId) ? raw.origin.threadId : null,
         threadNameSnapshot:
@@ -253,6 +284,7 @@
   function persistNow() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
+    discardTransientBlankDraft();
     writeMirror();
     if (!serverWritable) return Promise.resolve(false);
     const payload = JSON.stringify(store);
@@ -276,6 +308,21 @@
       }
     });
     return saveChain;
+  }
+
+  function discardTransientBlankDraft() {
+    for (const id of [...transientDraftIds]) {
+      const entry = store.entries.find((item) => item.id === id);
+      if (entry?.content.trim()) {
+        transientDraftIds.delete(id);
+        continue;
+      }
+      store.entries = store.entries.filter((item) => item.id !== id);
+      if (store.activeEntryId === id) store.activeEntryId = null;
+      if (currentEntryId === id) currentEntryId = null;
+      transientDraftIds.delete(id);
+      bridge?.updateContext?.({ entryId: null, mode: null, meaningful: false });
+    }
   }
 
   function assertStore() {
@@ -326,7 +373,9 @@
     const thread = bridge?.getContextSnapshot?.() || bridge?.getThreadSnapshot?.() || {};
     const pointer = thread.circumspectionContext?.lastEntryId;
     const lastSurface = thread.navigationContext?.lastMeaningfulSurface;
-    const pointedEntry = pointer ? store.entries.find((entry) => entry.id === pointer) : null;
+    const pointedEntry = pointer
+      ? store.entries.find((entry) => entry.id === pointer && entry.status !== "binned")
+      : null;
     if (lastSurface === "circumspection" && pointedEntry) {
       recordAudit("CIRCUMSPECTION_ROUTE_RESOLVED", {
         ruleId: "R5", destinationState: "RESUME_ENTRY",
@@ -370,8 +419,8 @@
     store.entries.push(entry);
     store.activeEntryId = entry.id;
     currentEntryId = entry.id;
+    transientDraftIds.add(entry.id);
     recordAudit("ENTRY_CREATED", { destinationState: "NEW_ENTRY" });
-    markStoreDirty();
     return entry;
   }
 
@@ -382,12 +431,12 @@
       ruleId, destinationState: "NEW_ENTRY",
       metadata: { trigger, fallbackUsed: ruleId === "R8", pointerStatus: ruleId === "R8" ? "recovered" : "none" },
     });
-    bridge?.updateContext?.({ entryId: entry.id, action: "entry-created", mode: "writing", meaningful: true });
+    bridge?.updateContext?.({ entryId: entry.id, mode: "writing", meaningful: false });
     openEntry(entry.id, "writing", trigger);
   }
 
   function openEntry(entryId, nextMode = "writing", trigger = "catalogue-item", pushHistory = true) {
-    const entry = store.entries.find((item) => item.id === entryId);
+    const entry = store.entries.find((item) => item.id === entryId && item.status !== "binned");
     if (!entry) return;
     cancelRevealQueue();
     enterInner();
@@ -399,7 +448,6 @@
     hideDeleteConfirmation();
     const pages = pagesFor(entry);
     currentPageIndex = nextMode === "reading" ? 0 : Math.max(0, pages.length - 1);
-    el.circInput.value = entry.content;
     el.circInput.readOnly = nextMode !== "writing";
     showWriting();
     renderEntry();
@@ -415,7 +463,7 @@
       destinationState: nextMode === "reading" ? "EARLIER_LEAF_READING" : "LIVING_PAGE",
       metadata: { trigger },
     });
-    markStoreDirty();
+    if (!transientDraftIds.has(entry.id)) markStoreDirty();
   }
 
   function enterInner() {
@@ -439,6 +487,7 @@
 
   function openCatalogue(trigger = "catalogue-strokes", ruleId = "R1", pushHistory = true) {
     enterInner();
+    catalogueScope = "active";
     currentView = "catalogue";
     mode = "catalogue";
     hideDeleteConfirmation();
@@ -478,7 +527,9 @@
     }
   }
 
-  function activeEntry() { return store.entries.find((entry) => entry.id === currentEntryId) || null; }
+  function activeEntry() {
+    return store.entries.find((entry) => entry.id === currentEntryId && entry.status !== "binned") || null;
+  }
 
   function handleFieldPointer(event) {
     if (event.target.closest("button")) return;
@@ -492,18 +543,27 @@
     const entry = activeEntry();
     const directInk = store.settings.inkEffect === "none";
     if (!entry || (mode !== "writing" && !(directInk && mode === "reading"))) return;
-    const incoming = el.circInput.value;
-    if (incoming === entry.content) return;
+    const incomingLeaf = el.circInput.value;
     hideDeleteConfirmation();
     const previousContent = entry.content;
     const previousPages = pagesFor(entry);
+    const currentPage =
+      previousPages[currentPageIndex] || { start: displayedPageStart, end: displayedPageEnd };
+    const incoming =
+      previousContent.slice(0, currentPage.start) +
+      incomingLeaf +
+      previousContent.slice(currentPage.end);
+    if (incoming === previousContent) return;
     const priorLength = previousContent.length;
     const wasEarlierLeaf = currentPageIndex < previousPages.length - 1;
     const edit = changedRange(previousContent, incoming);
     entry.content = incoming;
     entry.manualPageBreaks = offsetsAfterEdit(entry.manualPageBreaks, edit, incoming.length);
     entry.settledUntil = directInk ? incoming.length : Math.min(entry.settledUntil, incoming.length);
-    entry.lastMeaningfulAnchor = Math.min(el.circInput.selectionStart ?? incoming.length, incoming.length);
+    entry.lastMeaningfulAnchor = Math.min(
+      currentPage.start + (el.circInput.selectionStart ?? incomingLeaf.length),
+      incoming.length
+    );
     entry.lastViewedAnchor = entry.lastMeaningfulAnchor;
     entry.updatedAt = now();
     changedInVisit = true;
@@ -512,8 +572,15 @@
       sourceState: "LISTENING", destinationState: "COMPOSING",
       metadata: { inputType: allowedInputType(inputType), inputLength: incoming.length },
     });
-    bridge?.updateContext?.({ entryId: entry.id, action: "input-accepted", mode, meaningful: true });
-    markStoreDirty();
+    const meaningful = Boolean(entry.content.trim());
+    if (meaningful && transientDraftIds.has(entry.id)) {
+      transientDraftIds.delete(entry.id);
+      bridge?.updateContext?.({ entryId: entry.id, action: "input-accepted", mode, meaningful: true });
+      markStoreDirty();
+    } else if (!transientDraftIds.has(entry.id)) {
+      bridge?.updateContext?.({ entryId: entry.id, action: "input-accepted", mode, meaningful: true });
+      markStoreDirty();
+    }
     el.circListening.classList.add("is-quiet");
     const previousPageCount = previousPages.length;
     const pages = pagesFor(entry);
@@ -709,7 +776,8 @@
       for (const token of tokens) {
         const absoluteStart = segmentStart + token.start;
         const absoluteEnd = segmentStart + token.end;
-        if (count && count + token.text.length > capacity) {
+        const visibleLength = visibleTokenLength(token.text);
+        if (count && count + visibleLength > capacity) {
           pages.push({ start: pageStart, end: cursor, text: content.slice(pageStart, cursor) });
           const key = `${entryId}:${cursor}`;
           if (activeEntry()?.id === entryId && !auditedPageBreaks.has(key)) {
@@ -722,7 +790,7 @@
           count = 0;
         }
         cursor = absoluteEnd;
-        count += token.text.length;
+        count += visibleLength;
       }
       cursor = Math.max(cursor, segmentEnd);
       if (cursor > pageStart || !pages.length || manual) {
@@ -736,15 +804,26 @@
     return pages.length ? pages : [{ start: 0, end: 0, text: "" }];
   }
 
+  function visibleTokenLength(text) {
+    return String(text || "")
+      .replace(/@\[([^\]]+)\]\(filum:thread\/[a-z0-9-]{8,64}\)/gi, "@$1")
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
+      .replace(/\*\*|__|\*|`/g, "")
+      .replace(/^\s*(?:-\s+|\d+\.\s+)/gm, "")
+      .length;
+  }
+
   function renderEntry() {
     const entry = activeEntry();
     if (!entry) return;
     const pages = pagesFor(entry);
     currentPageIndex = boundedInteger(currentPageIndex, 0, pages.length - 1, pages.length - 1);
     const page = pages[currentPageIndex];
+    displayedPageStart = page.start;
+    displayedPageEnd = page.end;
     const directInk = store.settings.inkEffect === "none";
     el.circProjection.innerHTML = directInk ? "" : projectionMarkup(entry, page);
-    if (el.circInput.value !== entry.content) el.circInput.value = entry.content;
+    if (el.circInput.value !== page.text) el.circInput.value = page.text;
     el.circProjection.style.setProperty("--circ-blur", `${store.settings.blurPx}px`);
     el.circProjection.style.setProperty("--circ-settle", `${store.settings.revealDurationMs}ms`);
     const living = currentPageIndex === pages.length - 1;
@@ -755,10 +834,10 @@
     el.circLeafPosition.textContent = living ? `Living Page · ${pages.length}` : `Leaf ${currentPageIndex + 1} of ${pages.length}`;
     el.circPrevLeaf.disabled = currentPageIndex === 0;
     el.circNextLeaf.disabled = living;
-    el.circRevise.hidden = mode === "revision" || !entry.content;
+    el.circRevise.hidden = true;
     el.circDeleteLeaf.hidden = mode === "revision";
     el.circDeleteLeaf.disabled = page.start === page.end;
-    el.circTurnLeaf.hidden = mode !== "writing" || !living;
+    el.circTurnLeaf.hidden = mode !== "writing" || !living || !entry.content.trim();
     el.circInput.readOnly = mode === "revision" || (!directInk && (mode !== "writing" || !living));
     el.circInput.setAttribute("aria-readonly", el.circInput.readOnly ? "true" : "false");
     if (reading) el.circLive.textContent = `Reading leaf ${currentPageIndex + 1} of ${pages.length}`;
@@ -799,7 +878,8 @@
 
   function focusDirectOffset(offset) {
     requestAnimationFrame(() => {
-      const target = Math.max(0, Math.min(offset, el.circInput.value.length));
+      const localOffset = offset - displayedPageStart;
+      const target = Math.max(0, Math.min(localOffset, el.circInput.value.length));
       el.circInput.focus({ preventScroll: true });
       el.circInput.setSelectionRange(target, target);
     });
@@ -888,22 +968,32 @@
     const entry = activeEntry();
     if (!entry || mode !== "writing") return;
     hideDeleteConfirmation();
-    if (!entry.manualPageBreaks.includes(entry.content.length)) {
-      entry.manualPageBreaks.push(entry.content.length);
+    const selectedOffset = Number(el.circInput.selectionStart);
+    const breakOffset = Math.max(
+      0,
+      Math.min(
+        displayedPageStart + (Number.isFinite(selectedOffset) ? selectedOffset : el.circInput.value.length),
+        entry.content.length
+      )
+    );
+    if (!entry.manualPageBreaks.includes(breakOffset)) {
+      entry.manualPageBreaks.push(breakOffset);
       entry.manualPageBreaks.sort((a, b) => a - b);
     }
     entry.updatedAt = now();
     entry.lastMeaningfulAnchor = entry.content.length;
     changedInVisit = true;
     recordAudit("MANUAL_PAGE_BREAK_CREATED", {
-      destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: false, breakOffset: entry.content.length },
+      destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: false, breakOffset },
     });
     bridge?.updateContext?.({ entryId: entry.id, action: "manual-page-break", mode: "writing", meaningful: true });
-    currentPageIndex = pagesFor(entry).length - 1;
+    const nextPages = pagesFor(entry);
+    const nextIndex = nextPages.findIndex((page) => page.start === breakOffset);
+    currentPageIndex = nextIndex >= 0 ? nextIndex : nextPages.length - 1;
     animateLeafChange(false);
     renderEntry();
     markStoreDirty();
-    focusAppend();
+    focusDirectOffset(breakOffset);
   }
 
   function requestLeafDeletion() {
@@ -949,7 +1039,6 @@
     entry.lastViewedAnchor = offsetAfterDeletion(entry.lastViewedAnchor, start, end);
     entry.updatedAt = now();
     changedInVisit = true;
-    el.circInput.value = entry.content;
     const newPages = pagesFor(entry);
     currentPageIndex = Math.min(currentPageIndex, newPages.length - 1);
     mode = currentPageIndex === newPages.length - 1 ? "writing" : "reading";
@@ -1039,10 +1128,24 @@
   }
 
   function renderCatalogue() {
-    const entries = [...store.entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const entries = store.entries
+      .filter((entry) =>
+        catalogueScope === "binned"
+          ? entry.status === "binned"
+          : entry.status !== "binned" && Boolean(entry.content.trim())
+      )
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const hasBlankDraft = store.entries.some(
+      (entry) => entry.status === "active" && !entry.content.trim()
+    );
+    el.circCatalogueHeading.textContent = catalogueScope === "binned" ? "Bin" : "Catalogue";
+    el.circBinButton.textContent = catalogueScope === "binned" ? "Catalogue" : "Bin";
     el.circReturnLiving.hidden = !activeEntry();
+    el.circNewEntry.hidden = catalogueScope === "binned" || hasBlankDraft;
     if (!entries.length) {
-      el.circCatalogueList.innerHTML = '<p class="circ-catalogue-empty">No leaves have settled here yet.</p>';
+      el.circCatalogueList.innerHTML = `<p class="circ-catalogue-empty">${
+        catalogueScope === "binned" ? "The Circumspection bin is empty." : "No leaves have settled here yet."
+      }</p>`;
       return;
     }
     el.circCatalogueList.innerHTML = entries.map((entry) => {
@@ -1054,8 +1157,17 @@
         <p class="circ-entry-excerpt">${escapeHtml(excerpt || "An unwritten leaf")}</p>
         <p class="circ-entry-meta">Updated ${escapeHtml(relativeTime(entry.updatedAt))} · ${words} ${words === 1 ? "word" : "words"} · about ${leaves} ${leaves === 1 ? "leaf" : "leaves"}</p>
         <div class="circ-entry-actions">
-          <button class="circ-text-control" type="button" data-circ-read="${entry.id}">Read</button>
-          <button class="circ-text-control" type="button" data-circ-revise="${entry.id}">Revise</button>
+          ${
+            catalogueScope === "binned"
+              ? `<button class="circ-text-control" type="button" data-circ-restore="${entry.id}">Restore</button>`
+              : `<button class="circ-text-control" type="button" data-circ-read="${entry.id}">Read</button>
+                 <button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
+                   aria-label="Move this note to the Circumspection bin" title="Move to bin">
+                   <svg viewBox="0 0 24 24" aria-hidden="true">
+                     <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"></path>
+                   </svg>
+                 </button>`
+          }
         </div>
       </article>`;
     }).join("");
@@ -1063,12 +1175,25 @@
 
   function handleCatalogueAction(event) {
     const read = event.target.closest("[data-circ-read]");
-    const revise = event.target.closest("[data-circ-revise]");
+    const bin = event.target.closest("[data-circ-bin]");
+    const restore = event.target.closest("[data-circ-restore]");
     if (read) openEntry(read.dataset.circRead, "reading", "catalogue-item");
-    if (revise) {
-      openEntry(revise.dataset.circRevise, "reading", "catalogue-item");
-      enterRevision();
+    if (bin) moveCatalogueEntry(bin.dataset.circBin, "binned");
+    if (restore) moveCatalogueEntry(restore.dataset.circRestore, "active");
+  }
+
+  function moveCatalogueEntry(entryId, status) {
+    const entry = store.entries.find((item) => item.id === entryId);
+    if (!entry || !["active", "binned"].includes(status)) return;
+    entry.status = status;
+    entry.updatedAt = now();
+    if (status === "binned" && store.activeEntryId === entry.id) {
+      store.activeEntryId = null;
+      currentEntryId = null;
+      bridge?.updateContext?.({ entryId: null, mode: "catalogue", meaningful: true, action: "entry-binned" });
     }
+    markStoreDirty(true);
+    renderCatalogue();
   }
 
   function returnToLivingPage() {

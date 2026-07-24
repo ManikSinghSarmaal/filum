@@ -151,7 +151,11 @@
         parts.push(inlineFromNode(node));
       }
     }
-    return parts.join("\n\n").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trimEnd();
+    return parts
+      .join("\n\n")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+$/g, "")
+      .replace(/\n{4,}/g, "\n\n\n");
   }
 
   function selectionInside(root) {

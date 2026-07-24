@@ -244,9 +244,10 @@
           <p id="circModeLabel" class="circ-mode-label">Living Page</p>
           <p id="circListening" class="circ-listening" aria-live="polite">the page is listening</p>
           <div id="circProjection" class="circ-projection" aria-hidden="true"></div>
-          <textarea id="circInput" class="circ-input" spellcheck="true" autocapitalize="sentences"
-                    aria-label="Circumspection writing surface"
-                    aria-describedby="circInputDescription"></textarea>
+          <div id="circInput" class="circ-input" contenteditable="true" spellcheck="true"
+               autocapitalize="sentences" role="textbox" aria-multiline="true"
+               aria-label="Circumspection writing surface"
+               aria-describedby="circInputDescription"></div>
           <textarea id="circRevisionInput" class="circ-revision-input" spellcheck="true"
                     autocapitalize="sentences" aria-label="Revise settled Circumspection writing"
                     aria-describedby="circInputDescription" hidden></textarea>
@@ -256,13 +257,15 @@
         </div>
 
         <nav class="circ-leaf-navigation" aria-label="Circumspection leaves">
-          <button id="circPrevLeaf" class="circ-text-control" type="button">Earlier</button>
+          <button id="circPrevLeaf" class="circ-text-control circ-arrow-control" type="button"
+                  aria-label="Previous leaf">←</button>
           <span id="circLeafPosition" aria-live="polite">Living Page</span>
-          <button id="circNextLeaf" class="circ-text-control" type="button">Later</button>
+          <button id="circNextLeaf" class="circ-text-control circ-arrow-control" type="button"
+                  aria-label="Next leaf">→</button>
         </nav>
         <div class="circ-writing-controls">
           <button id="circDeleteLeaf" class="circ-text-control" type="button">Delete leaf</button>
-          <button id="circRevise" class="circ-text-control" type="button">Revise</button>
+          <button id="circRevise" class="circ-text-control" type="button" hidden>Revise</button>
           <button id="circTurnLeaf" class="circ-text-control" type="button">Turn the leaf</button>
         </div>
         <div id="circDeleteLeafConfirm" class="circ-delete-confirm" hidden>
@@ -284,6 +287,7 @@
           </div>
           <div class="circ-catalogue-actions">
             <button id="circReturnLiving" class="circ-text-control" type="button">Return to Living Page</button>
+            <button id="circBinButton" class="circ-text-control" type="button">Bin</button>
             <button id="circNewEntry" class="circ-settle-control" type="button">Begin another</button>
           </div>
         </header>

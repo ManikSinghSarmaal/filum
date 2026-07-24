@@ -2177,7 +2177,7 @@ body.is-circumspecting > .app-shell {
 .circ-input,
 .circ-revision-input {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   width: 100%;
   min-height: clamp(380px, 58dvh, 720px);
   margin: 0;
@@ -2189,6 +2189,28 @@ body.is-circumspecting > .app-shell {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 2;
+}
+
+.circ-field > .rich-toolbar {
+  grid-column: 1;
+  grid-row: 2;
+  justify-content: flex-start;
+  width: 100%;
+  margin: -8px 0 24px;
+  padding: 5px 0 9px;
+  border-top: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+
+.circ-field > .rich-toolbar .rich-link-panel {
+  top: calc(100% + 7px);
+  bottom: auto;
+}
+
+.circ-field > .rich-mention-menu {
+  top: 108px;
+  bottom: auto;
 }
 
 .circ-listening {
@@ -2264,6 +2286,20 @@ body.is-circumspecting > .app-shell {
   box-shadow: none;
   resize: none;
   overflow: hidden;
+}
+
+.circ-input.rich-surface {
+  padding: 0;
+  white-space: normal;
+}
+
+.circ-input.rich-surface p {
+  margin: 0 0 0.85em;
+}
+
+.circ-input.rich-surface ul,
+.circ-input.rich-surface ol {
+  margin: 0.45em 0 0.9em;
 }
 
 .circ-input {
@@ -2348,7 +2384,7 @@ body.is-circumspecting > .app-shell {
 }
 
 .circ-catalogue-view {
-  width: min(72ch, calc(100vw - 48px));
+  width: min(1040px, calc(100vw - 72px));
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0 auto;
@@ -2375,6 +2411,42 @@ body.is-circumspecting > .app-shell {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.circ-bin-control {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.circ-bin-control svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.circ-bin-control:hover,
+.circ-bin-control:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  outline: none;
+}
+
+.circ-arrow-control {
+  min-width: 42px;
+  font-size: 1.15rem;
 }
 
 .circ-catalogue-list { display: grid; }

@@ -568,7 +568,7 @@ function validateCircumspectionEntry(raw, ids, index) {
     previousBreak = offset;
     return offset;
   });
-  if (!["active", "archived"].includes(raw.status)) {
+  if (!["active", "archived", "binned"].includes(raw.status)) {
     invalidCircumspection(`${label}.status is invalid`);
   }
   if (!isPlainObject(raw.origin)) invalidCircumspection(`${label}.origin must be an object`);
@@ -690,6 +690,12 @@ function validateCircumspectionStore(raw) {
   const activeEntryId = requireNullableId(raw.activeEntryId, "activeEntryId");
   if (activeEntryId !== null && !ids.has(activeEntryId)) {
     invalidCircumspection("activeEntryId does not reference an entry");
+  }
+  if (
+    activeEntryId !== null &&
+    !entries.some((entry) => entry.id === activeEntryId && entry.status !== "binned")
+  ) {
+    invalidCircumspection("activeEntryId cannot reference a binned entry");
   }
   // Audit is intentionally a rolling debugging window. Dropping the oldest
   // records is the only lossy normalisation performed by this endpoint.
