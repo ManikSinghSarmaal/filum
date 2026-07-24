@@ -685,6 +685,178 @@ textarea {
   min-height: 96px;
 }
 
+.rich-editor {
+  position: relative;
+  width: 100%;
+  border: 1px solid rgba(22, 22, 22, 0.12);
+  border-radius: 16px;
+  background: rgba(252, 250, 245, 0.95);
+  overflow: visible;
+}
+
+.rich-source {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.rich-surface {
+  min-height: 132px;
+  padding: 14px 16px;
+  color: var(--ink);
+  line-height: 1.58;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.rich-surface:focus {
+  outline: 2px solid rgba(22, 22, 22, 0.18);
+  outline-offset: 2px;
+}
+
+.rich-surface:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.rich-surface p {
+  margin: 0 0 0.75em;
+}
+
+.rich-surface p:last-child {
+  margin-bottom: 0;
+}
+
+.rich-surface ul,
+.rich-surface ol {
+  margin: 0.5em 0 0.75em;
+  padding-left: 1.6em;
+}
+
+.rich-surface a {
+  color: var(--link);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.rich-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 42px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.rich-toolbar > button,
+.rich-link-panel button,
+.rich-mention-menu button {
+  min-width: 34px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rich-toolbar > button:hover,
+.rich-toolbar > button:focus-visible,
+.rich-toolbar > button[aria-pressed="true"] {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: rgba(231, 223, 208, 0.46);
+  outline: none;
+}
+
+.rich-toolbar-divider {
+  width: 1px;
+  height: 22px;
+  margin-inline: 2px;
+  background: var(--line);
+}
+
+.rich-link-panel {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 8px);
+  z-index: 8;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 6px;
+  width: min(430px, calc(100vw - 52px));
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 252, 246, 0.99);
+  box-shadow: 0 14px 32px rgba(17, 17, 17, 0.14);
+}
+
+.rich-link-panel[hidden],
+.rich-mention-menu[hidden] {
+  display: none;
+}
+
+.rich-link-panel input {
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+}
+
+.rich-mention-menu {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 50px;
+  z-index: 7;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 252, 246, 0.99);
+  box-shadow: 0 14px 32px rgba(17, 17, 17, 0.14);
+}
+
+.rich-mention-menu button {
+  display: block;
+  width: 100%;
+  color: var(--ink);
+  text-align: left;
+}
+
+.rich-mention-menu button:hover,
+.rich-mention-menu button.is-active {
+  background: rgba(231, 223, 208, 0.54);
+}
+
+.thread-reference {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(260px, 80vw);
+  margin-inline: 2px;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink);
+  background: rgba(231, 223, 208, 0.48);
+  font-size: 0.9em;
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
 input:focus,
 select:focus,
 textarea:focus {

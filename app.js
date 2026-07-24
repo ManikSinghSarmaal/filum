@@ -57,6 +57,10 @@ let findResultsCache = [];
 let findActiveIndex = 0;
 let findInvalid = false;
 let findRestoreFocus = null;
+let captureNotesEditor = null;
+let inlineNotesEditor = null;
+const undoByThread = new Map();
+const navigationTrail = [];
 
 let appSettings = defaultSettings();
 let noteLabelRegex = null;
@@ -215,7 +219,9 @@ function hydrate(thread) {
   state.threadId = thread.id || null;
   state.threadName = thread.name || "Untitled thread";
   const incoming = thread.state || emptyStateObject();
-  state.tasks = Array.isArray(incoming.tasks) ? incoming.tasks.map(normalizeTask) : [];
+  state.tasks = Array.isArray(incoming.tasks)
+    ? incoming.tasks.map((task) => normalizeTask(task, thread.createdAt))
+    : [];
   state.currentStep = steps.includes(incoming.currentStep) ? incoming.currentStep : DEFAULT_STEP;
   state.focusIndex = Number.isInteger(incoming.focusIndex) ? incoming.focusIndex : 0;
   state.circumspectionContext = normalizeCircumspectionContext(incoming.circumspectionContext);
@@ -380,8 +386,12 @@ function captureOuterSnapshot() {
 // `done` / `completedAt` appear here, and the legacy triage fields (urgency,
 // energy, type, duration) are preserved so old files round-trip untouched even
 // though the UI no longer renders them.
-function normalizeTask(task) {
+function normalizeTask(task, fallbackCreatedAt = null) {
   const t = task && typeof task === "object" ? task : {};
+  const createdAt =
+    typeof t.createdAt === "string" && Number.isFinite(Date.parse(t.createdAt))
+      ? t.createdAt
+      : fallbackCreatedAt || new Date().toISOString();
   return {
     id: typeof t.id === "string" && t.id ? t.id : crypto.randomUUID(),
     title: typeof t.title === "string" ? t.title : "",
@@ -392,6 +402,11 @@ function normalizeTask(task) {
     duration: typeof t.duration === "string" ? t.duration : "",
     done: t.done === true,
     completedAt: typeof t.completedAt === "string" ? t.completedAt : null,
+    createdAt,
+    updatedAt:
+      typeof t.updatedAt === "string" && Number.isFinite(Date.parse(t.updatedAt))
+        ? t.updatedAt
+        : createdAt,
     images: Array.isArray(t.images)
       ? t.images
           .filter((img) => img && typeof img.src === "string" && img.src)
@@ -471,8 +486,10 @@ function prevFocusTask() {
 function completeFocusedTask() {
   const task = state.tasks[state.focusIndex];
   if (!task || task.done) return;
+  rememberUndo("complete-task");
   task.done = true;
   task.completedAt = new Date().toISOString();
+  task.updatedAt = task.completedAt;
   normalizeFocus();
   markOuterMeaningful("complete-task");
   // No message, no celebration — the loosening thread is the acknowledgment.
@@ -482,11 +499,79 @@ function completeFocusedTask() {
 function restoreTask(taskId) {
   const task = state.tasks.find((entry) => entry.id === taskId);
   if (!task || !task.done) return;
+  rememberUndo("restore-task");
   task.done = false;
   task.completedAt = null;
+  task.updatedAt = new Date().toISOString();
   normalizeFocus();
   markOuterMeaningful("restore-task");
   render();
+}
+
+function currentUndoStack() {
+  const key = state.threadId || "offline";
+  if (!undoByThread.has(key)) undoByThread.set(key, []);
+  return undoByThread.get(key);
+}
+
+function rememberUndo(action) {
+  const stack = currentUndoStack();
+  stack.push({
+    action,
+    tasks: cloneSerializable(state.tasks),
+    currentStep: state.currentStep,
+    focusIndex: state.focusIndex,
+  });
+  if (stack.length > 50) stack.splice(0, stack.length - 50);
+}
+
+function undoLastTrackedAction() {
+  const snapshot = currentUndoStack().pop();
+  if (!snapshot) {
+    setStatus("Nothing to undo");
+    return;
+  }
+  state.tasks = snapshot.tasks.map((task) => normalizeTask(task));
+  state.currentStep = steps.includes(snapshot.currentStep) ? snapshot.currentStep : DEFAULT_STEP;
+  state.focusIndex = snapshot.focusIndex;
+  editingTaskId = null;
+  editingImages = [];
+  normalizeFocus();
+  markOuterMeaningful(`undo-${snapshot.action}`);
+  render();
+}
+
+function handleAssistedShortcut(event) {
+  if (appSettings.keyboardAssistedNavigation === false) return false;
+  const target = event.target instanceof Element ? event.target : null;
+  const editing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const key = event.key.toLowerCase();
+  const newKnot = isMac
+    ? event.ctrlKey && !event.metaKey && !event.altKey && key === "n"
+    : event.altKey && !event.ctrlKey && !event.metaKey && key === "n";
+  const markDone = isMac
+    ? event.ctrlKey && !event.metaKey && !event.altKey && key === "w"
+    : event.altKey && !event.ctrlKey && !event.metaKey && key === "w";
+  const undo = !editing && (isMac ? event.metaKey : event.ctrlKey) && !event.altKey && key === "z";
+
+  if (newKnot) {
+    event.preventDefault();
+    setStep("capture");
+    requestAnimationFrame(() => elements.taskTitle?.focus());
+    return true;
+  }
+  if (markDone && !editing) {
+    event.preventDefault();
+    completeFocusedTask();
+    return true;
+  }
+  if (undo) {
+    event.preventDefault();
+    undoLastTrackedAction();
+    return true;
+  }
+  return false;
 }
 
 function toggleRetrospect() {
@@ -514,7 +599,11 @@ function bindEvents() {
   });
 
   bindCaptureImages();
-  if (elements.taskNotes) bindMarkShortcuts(elements.taskNotes);
+  if (elements.taskNotes) {
+    captureNotesEditor = bindMarkShortcuts(elements.taskNotes, {
+      onPaste: (event) => handleImagePaste(event, captureImages, renderCaptureAttachments),
+    });
+  }
   if (elements.focusNextButton) {
     elements.focusNextButton.addEventListener("click", nextFocusTask);
   }
@@ -620,6 +709,12 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !target.isConnected) return;
+    const threadReference = target.closest("[data-thread-ref]");
+    if (threadReference && !target.closest("[contenteditable='true']")) {
+      event.preventDefault();
+      navigateToReferencedThread(threadReference.dataset.threadRef);
+      return;
+    }
     if (threadMenuOpen && !target.closest(".thread-menu")) closeThreadMenu();
     if (prefsOpen && !target.closest(".prefs-menu")) closePrefsPanel();
     if (
@@ -632,12 +727,14 @@ function bindEvents() {
     }
   });
   document.addEventListener("keydown", (event) => {
+    if (handleAssistedShortcut(event)) return;
     if (event.key === "Escape") {
       if (threadMenuOpen) closeThreadMenu();
       if (prefsOpen) closePrefsPanel();
     }
     const typing =
-      event.target.closest("input, textarea, select") || editingTaskId !== null;
+      event.target.closest("input, textarea, select, [contenteditable='true']") ||
+      editingTaskId !== null;
     const wantsFind =
       (event.key === "/" && !typing) ||
       ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k");
@@ -699,6 +796,8 @@ function handleAddTask(event) {
     return;
   }
 
+  rememberUndo("add-task");
+  const timestamp = new Date().toISOString();
   state.tasks.push({
     id: crypto.randomUUID(),
     title,
@@ -709,10 +808,13 @@ function handleAddTask(event) {
     duration: "",
     done: false,
     completedAt: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
     images: captureImages.slice(),
   });
 
   elements.taskForm.reset();
+  captureNotesEditor?.setMarkdown("");
   captureImages = [];
   renderCaptureAttachments();
   elements.taskTitle.focus();
@@ -721,6 +823,7 @@ function handleAddTask(event) {
 }
 
 function resetState() {
+  if (state.tasks.length) rememberUndo("reset-thread");
   state.tasks = [];
   state.currentStep = DEFAULT_STEP;
   state.focusIndex = 0;
@@ -996,6 +1099,22 @@ async function openThreadById(id) {
     console.warn("[filum] open failed:", err);
     setStatus("Could not open thread");
   }
+}
+
+function captureNavigationPointer() {
+  const task = state.tasks[state.focusIndex] || null;
+  return {
+    threadId: state.threadId,
+    step: state.currentStep,
+    taskId: task?.id || null,
+    scrollY: window.scrollY,
+  };
+}
+
+async function navigateToReferencedThread(id) {
+  if (!id || id === state.threadId) return;
+  navigationTrail.push(captureNavigationPointer());
+  await openThreadById(id);
 }
 
 // ---- Thread lifecycle: archive / bin ---------------------------------------
@@ -1446,6 +1565,7 @@ function moveTask(taskId, direction) {
 function moveTaskToVisibleIndex(taskId, newVisibleIndex) {
   const from = state.tasks.findIndex((task) => task.id === taskId);
   if (from < 0) return;
+  rememberUndo("reorder-task");
   const focusedId = state.tasks[state.focusIndex] ? state.tasks[state.focusIndex].id : null;
   const [task] = state.tasks.splice(from, 1);
   const visibleAfter = state.tasks.filter((entry) => !entry.done);
@@ -1920,6 +2040,20 @@ function inlineMarkup(raw) {
   };
 
   let work = String(raw == null ? "" : raw);
+  work = work.replace(
+    /@\[([^\]]+)\]\(filum:thread\/([a-z0-9-]{8,64})\)/gi,
+    (m, label, id) =>
+      stash(
+        `<button class="thread-reference" type="button" data-thread-ref="${escapeHtml(id)}">@${escapeHtml(label)}</button>`
+      )
+  );
+  work = work.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+|mailto:[^)\s]+)\)/gi,
+    (m, label, href) =>
+      stash(
+        `<a class="rich-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
+      )
+  );
   work = work.replace(/`([^`\n]+)`/g, (m, body) =>
     stash(`<code class="note-code-inline">${escapeHtml(body)}</code>`)
   );
@@ -1950,6 +2084,7 @@ function renderRichNotes(notes) {
   const blocks = [];
   let plainRun = [];
   let listRun = [];
+  let orderedRun = [];
   let fenceRun = null;
 
   const flushPlain = () => {
@@ -1966,6 +2101,14 @@ function renderRichNotes(notes) {
       listRun = [];
     }
   };
+  const flushOrdered = () => {
+    if (orderedRun.length) {
+      blocks.push(
+        `<ol class="note-list">${orderedRun.map((item) => `<li>${inlineMarkup(item)}</li>`).join("")}</ol>`
+      );
+      orderedRun = [];
+    }
+  };
 
   for (const line of lines) {
     if (fenceRun) {
@@ -1980,16 +2123,26 @@ function renderRichNotes(notes) {
     if (line.trim().startsWith("```")) {
       flushPlain();
       flushList();
+      flushOrdered();
       fenceRun = [];
       continue;
     }
     const listMatch = line.match(/^\s*-\s+(.*)$/);
+    const orderedMatch = line.match(/^\s*\d+\.\s+(.*)$/);
     if (listMatch) {
       flushPlain();
+      flushOrdered();
       listRun.push(listMatch[1]);
       continue;
     }
+    if (orderedMatch) {
+      flushPlain();
+      flushList();
+      orderedRun.push(orderedMatch[1]);
+      continue;
+    }
     flushList();
+    flushOrdered();
     plainRun.push(line);
   }
   if (fenceRun) {
@@ -1998,6 +2151,7 @@ function renderRichNotes(notes) {
   }
   flushPlain();
   flushList();
+  flushOrdered();
   return blocks.join("");
 }
 
@@ -2106,10 +2260,11 @@ function handleImagePaste(event, target, rerender) {
       if (file) files.push(file);
     }
   }
-  if (!files.length) return;
+  if (!files.length) return false;
   // Keep the pasted image binary out of the plain-text field.
   event.preventDefault();
   addFilesToImages(files, target, rerender);
+  return true;
 }
 
 // Decode, downscale to a sane edge, and re-encode as a compact JPEG data URL so
@@ -2188,11 +2343,19 @@ function startEdit(taskId) {
   const form = document.querySelector(".inline-editor[data-editor]");
   if (!form) return;
   const target =
-    state.currentStep === "line" ? form.querySelector(".ie-notes") : form.querySelector(".ie-title");
+    state.currentStep === "line"
+      ? form.querySelector(".ie-notes")?._filumRichEditor?.root || form.querySelector(".rich-surface")
+      : form.querySelector(".ie-title");
   if (target) {
-    target.focus();
-    const caret = target.value.length;
-    target.setSelectionRange(caret, caret);
+    if (state.currentStep === "line" && inlineNotesEditor) {
+      inlineNotesEditor.focusOffset(inlineNotesEditor.getMarkdown().length);
+    } else if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      target.focus();
+      const caret = target.value.length;
+      target.setSelectionRange(caret, caret);
+    } else {
+      target.focus();
+    }
   }
 }
 
@@ -2215,9 +2378,11 @@ function saveEdit(formEl) {
     return;
   }
 
+  rememberUndo("edit-task");
   task.title = title;
   task.notes = formEl.querySelector(".ie-notes").value.trim();
   task.images = editingImages.map((img) => ({ ...img }));
+  task.updatedAt = new Date().toISOString();
 
   editingTaskId = null;
   editingImages = [];
@@ -2231,6 +2396,7 @@ function removeEditingTask() {
     cancelEdit();
     return;
   }
+  rememberUndo("remove-task");
   state.tasks.splice(index, 1);
   if (index < state.focusIndex) {
     state.focusIndex -= 1;
@@ -2279,8 +2445,9 @@ function bindInlineEditor() {
 
   const notes = form.querySelector(".ie-notes");
   if (notes) {
-    notes.addEventListener("paste", (event) => handleImagePaste(event, editingImages, renderTray));
-    bindMarkShortcuts(notes);
+    inlineNotesEditor = bindMarkShortcuts(notes, {
+      onPaste: (event) => handleImagePaste(event, editingImages, renderTray),
+    });
   }
 
   form.addEventListener("submit", (event) => {
@@ -2297,26 +2464,17 @@ function bindInlineEditor() {
   });
 }
 
-// Cmd/Ctrl+B / I / U wrap the selection in the matching mark. The textarea
-// stays a plain textarea — the marks render in the read views.
-function bindMarkShortcuts(textarea) {
-  textarea.addEventListener("keydown", (event) => {
-    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-    const key = event.key.toLowerCase();
-    const mark = key === "b" ? "**" : key === "i" ? "*" : key === "u" ? "__" : null;
-    if (!mark) return;
-    event.preventDefault();
-    wrapSelection(textarea, mark);
+function bindMarkShortcuts(textarea, options = {}) {
+  if (!window.FilumRichText) return null;
+  return window.FilumRichText.enhance(textarea, {
+    toolbarPosition: "bottom",
+    mentionProvider: (query) =>
+      threadList
+        .filter((thread) => !query || (thread.name || "Untitled thread").toLowerCase().includes(query))
+        .map((thread) => ({ id: thread.id, name: thread.name || "Untitled thread" })),
+    onThreadReference: (id) => navigateToReferencedThread(id),
+    ...options,
   });
-}
-
-function wrapSelection(textarea, mark) {
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  const selected = textarea.value.slice(start, end);
-  textarea.setRangeText(mark + selected + mark, start, end, "select");
-  textarea.setSelectionRange(start + mark.length, end + mark.length);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 // ---- Find within the thread -------------------------------------------------
