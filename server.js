@@ -124,6 +124,65 @@ async function listThreads(scope) {
   return items;
 }
 
+function searchScore(queryTerms, value, weight) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return 0;
+  let score = 0;
+  for (const term of queryTerms) {
+    const index = text.indexOf(term);
+    if (index < 0) continue;
+    score += weight + Math.max(0, 20 - index) / 20;
+  }
+  return score;
+}
+
+async function searchThreads(query) {
+  const terms = String(query || "")
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 12);
+  if (!terms.length) return [];
+  const results = [];
+  for (const scope of ["active", "archive"]) {
+    const dir = SCOPES[scope];
+    for (const file of await fs.readdir(dir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const thread = JSON.parse(await fs.readFile(path.join(dir, file), "utf8"));
+        const tasks = Array.isArray(thread.state?.tasks) ? thread.state.tasks : [];
+        const matches = [];
+        for (const task of tasks) {
+          const titleScore = searchScore(terms, task.title, 8);
+          const noteScore = searchScore(terms, task.notes, 3);
+          if (!titleScore && !noteScore) continue;
+          matches.push({
+            taskId: task.id,
+            title: typeof task.title === "string" ? task.title : "Untitled knot",
+            excerpt: String(task.notes || "").replace(/\s+/g, " ").trim().slice(0, 180),
+            score: titleScore + noteScore,
+          });
+        }
+        const nameScore = searchScore(terms, thread.name, 10);
+        if (!nameScore && !matches.length) continue;
+        matches.sort((a, b) => b.score - a.score);
+        results.push({
+          threadId: thread.id,
+          threadName: thread.name || "Untitled thread",
+          scope,
+          updatedAt: thread.updatedAt,
+          score: nameScore + matches.reduce((sum, match) => sum + match.score, 0),
+          matches: matches.slice(0, 6),
+        });
+      } catch {
+        // A malformed thread remains untouched and is omitted from search.
+      }
+    }
+  }
+  return results.sort((a, b) => b.score - a.score).slice(0, 100);
+}
+
 // ---- Settings --------------------------------------------------------------
 
 function defaultSettings() {
@@ -135,6 +194,8 @@ function defaultSettings() {
     textScale: 1,
     spacing: "calm",
     interfaceMotion: "full",
+    keyboardAssistedNavigation: true,
+    gitVersioningEnabled: false,
   };
 }
 
@@ -182,6 +243,14 @@ function sanitizeSettings(body) {
   if (body.interfaceMotion !== undefined) {
     if (!["full", "quiet", "none"].includes(body.interfaceMotion)) return null;
     out.interfaceMotion = body.interfaceMotion;
+  }
+  if (body.keyboardAssistedNavigation !== undefined) {
+    if (typeof body.keyboardAssistedNavigation !== "boolean") return null;
+    out.keyboardAssistedNavigation = body.keyboardAssistedNavigation;
+  }
+  if (body.gitVersioningEnabled !== undefined) {
+    if (typeof body.gitVersioningEnabled !== "boolean") return null;
+    out.gitVersioningEnabled = body.gitVersioningEnabled;
   }
   return out;
 }
@@ -801,6 +870,13 @@ async function handleApi(req, res, url) {
 
   if (segments[1] === "settings" && segments.length === 2) {
     return handleSettingsApi(req, res);
+  }
+  if (segments[1] === "search" && segments.length === 2) {
+    if (req.method !== "GET") {
+      res.writeHead(405, { allow: "GET" });
+      return res.end();
+    }
+    return sendJson(res, 200, await searchThreads(url.searchParams.get("q") || ""));
   }
   if (segments[1] === "circumspection" && segments.length === 2) {
     return handleCircumspectionApi(req, res);

@@ -61,6 +61,7 @@ let captureNotesEditor = null;
 let inlineNotesEditor = null;
 const undoByThread = new Map();
 const navigationTrail = [];
+let utilitySurface = null;
 
 let appSettings = defaultSettings();
 let noteLabelRegex = null;
@@ -109,6 +110,12 @@ const elements = {
   findResults: document.getElementById("findResults"),
   findPlanButton: document.getElementById("findPlanButton"),
   findLineButton: document.getElementById("findLineButton"),
+  navigationBackButton: document.getElementById("navigationBackButton"),
+  searchPage: document.getElementById("searchPage"),
+  searchPageSummary: document.getElementById("searchPageSummary"),
+  searchPageResults: document.getElementById("searchPageResults"),
+  personalisePage: document.getElementById("personalisePage"),
+  personaliseContent: document.getElementById("personaliseContent"),
 };
 
 const storage = {
@@ -173,6 +180,13 @@ const storage = {
       body: JSON.stringify(settings),
     });
     if (!res.ok) throw new Error(`settings save failed: ${res.status}`);
+    return res.json();
+  },
+  async searchThreads(query) {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`search failed: ${res.status}`);
     return res.json();
   },
 };
@@ -738,7 +752,7 @@ function bindEvents() {
     const wantsFind =
       (event.key === "/" && !typing) ||
       ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k");
-    if (wantsFind && state.tasks.length) {
+    if (wantsFind) {
       event.preventDefault();
       if (findOpen) closeFind();
       else openFind();
@@ -777,6 +791,11 @@ function bindEvents() {
   if (elements.newThreadButton) {
     elements.newThreadButton.addEventListener("click", handleNewThread);
   }
+  elements.navigationBackButton?.addEventListener("click", goBackInFilum);
+  elements.searchPageResults?.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-search-thread]");
+    if (row) openSearchResult(row.dataset.searchThread, row.dataset.searchTask || null);
+  });
 
   bindPlanDrag();
 
@@ -1115,6 +1134,7 @@ async function navigateToReferencedThread(id) {
   if (!id || id === state.threadId) return;
   navigationTrail.push(captureNavigationPointer());
   await openThreadById(id);
+  updateBackVisibility();
 }
 
 // ---- Thread lifecycle: archive / bin ---------------------------------------
@@ -1409,8 +1429,8 @@ function renderStepState() {
 
 function renderHeaderControls() {
   const hasTasks = state.tasks.length > 0;
-  if (elements.findPlanButton) elements.findPlanButton.hidden = !hasTasks;
-  if (elements.findLineButton) elements.findLineButton.hidden = !hasTasks;
+  if (elements.findPlanButton) elements.findPlanButton.hidden = false;
+  if (elements.findLineButton) elements.findLineButton.hidden = false;
 }
 
 function renderTaskPreview() {
@@ -2485,7 +2505,7 @@ function bindMarkShortcuts(textarea, options = {}) {
 // command palette.
 
 function openFind() {
-  if (!elements.findBar || !state.tasks.length) return;
+  if (!elements.findBar) return;
   findRestoreFocus = document.activeElement;
   findOpen = true;
   elements.findBar.hidden = false;
@@ -2523,8 +2543,8 @@ function handleFindKeydown(event) {
     }
   } else if (event.key === "Enter") {
     event.preventDefault();
-    const active = findResultsCache[findActiveIndex];
-    if (active) selectFindResult(active.task.id);
+    const query = elements.findInput.value.trim();
+    if (query) openGlobalSearch(query);
   }
 }
 
@@ -2675,6 +2695,92 @@ function selectFindResult(taskId) {
   }, 0);
 }
 
+function setUtilitySurface(surface) {
+  utilitySurface = surface;
+  document.body.classList.toggle("is-utility-page", Boolean(surface));
+  if (elements.searchPage) elements.searchPage.hidden = surface !== "search";
+  if (elements.personalisePage) elements.personalisePage.hidden = surface !== "personalise";
+  updateBackVisibility();
+}
+
+function updateBackVisibility() {
+  if (elements.navigationBackButton) {
+    elements.navigationBackButton.hidden = navigationTrail.length === 0;
+  }
+}
+
+async function openGlobalSearch(query) {
+  const clean = String(query || "").trim();
+  if (!clean) return;
+  if (!utilitySurface) navigationTrail.push(captureNavigationPointer());
+  closeFind();
+  setUtilitySurface("search");
+  elements.searchPageSummary.textContent = `Looking across every active and archived thread for “${clean}”.`;
+  elements.searchPageResults.innerHTML = '<p class="utility-empty">Looking through the threads…</p>';
+  try {
+    const results = await storage.searchThreads(clean);
+    elements.searchPageSummary.textContent = results.length
+      ? `${results.length} thread${results.length === 1 ? "" : "s"} contain a useful match for “${clean}”.`
+      : `No active or archived thread contains “${clean}”.`;
+    elements.searchPageResults.innerHTML = results.length
+      ? results
+          .map((result) => {
+            const primary = result.matches[0] || null;
+            return `<article class="search-catalogue-row">
+              <button type="button" data-search-thread="${escapeHtml(result.threadId)}"
+                ${primary ? `data-search-task="${escapeHtml(primary.taskId)}"` : ""}>
+                <span class="search-catalogue-scope">${result.scope === "archive" ? "Archived" : "Active"}</span>
+                <strong>${escapeHtml(result.threadName)}</strong>
+                <span>${escapeHtml(primary?.title || "Thread name match")}</span>
+                ${primary?.excerpt ? `<small>${escapeHtml(primary.excerpt)}</small>` : ""}
+              </button>
+            </article>`;
+          })
+          .join("")
+      : '<p class="utility-empty">Nothing in the current catalogue matches those words.</p>';
+  } catch (error) {
+    console.warn("[filum] global search failed:", error);
+    elements.searchPageSummary.textContent = "Search remained unavailable while the local server was out of reach.";
+    elements.searchPageResults.innerHTML = '<p class="utility-empty">Return to the thread and try again when the server is running.</p>';
+  }
+}
+
+async function openSearchResult(threadId, taskId) {
+  setUtilitySurface(null);
+  await openThreadById(threadId);
+  state.currentStep = "line";
+  if (taskId) {
+    const index = state.tasks.findIndex((task) => task.id === taskId && !task.done);
+    if (index >= 0) state.focusIndex = index;
+  }
+  normalizeFocus();
+  markOuterMeaningful("open-search-result");
+  render();
+  requestAnimationFrame(() => {
+    const card = document.querySelector(`[data-task-id="${CSS.escape(taskId || "")}"]`);
+    card?.classList.add("is-found");
+  });
+  updateBackVisibility();
+}
+
+async function goBackInFilum() {
+  const pointer = navigationTrail.pop();
+  if (!pointer) return;
+  setUtilitySurface(null);
+  if (pointer.threadId && pointer.threadId !== state.threadId) {
+    await openThreadById(pointer.threadId);
+  }
+  state.currentStep = steps.includes(pointer.step) ? pointer.step : DEFAULT_STEP;
+  if (pointer.taskId) {
+    const index = state.tasks.findIndex((task) => task.id === pointer.taskId);
+    if (index >= 0) state.focusIndex = index;
+  }
+  normalizeFocus();
+  render();
+  requestAnimationFrame(() => window.scrollTo({ top: pointer.scrollY || 0, behavior: "auto" }));
+  updateBackVisibility();
+}
+
 // ---- Settings ----------------------------------------------------------------
 //
 // One settings file on disk (~/.filum/settings.json), mirrored to localStorage
@@ -2690,6 +2796,8 @@ function defaultSettings() {
     interfaceMotion: "full",
     noteAliases: ["note"],
     noteColor: NOTE_SHADES[0],
+    keyboardAssistedNavigation: true,
+    gitVersioningEnabled: false,
   };
 }
 
@@ -2718,6 +2826,12 @@ function normalizeSettings(raw) {
   }
   if (typeof raw.noteColor === "string" && /^#[0-9a-f]{6}$/i.test(raw.noteColor.trim())) {
     base.noteColor = raw.noteColor.trim().toLowerCase();
+  }
+  if (typeof raw.keyboardAssistedNavigation === "boolean") {
+    base.keyboardAssistedNavigation = raw.keyboardAssistedNavigation;
+  }
+  if (typeof raw.gitVersioningEnabled === "boolean") {
+    base.gitVersioningEnabled = raw.gitVersioningEnabled;
   }
   return base;
 }
@@ -2833,6 +2947,38 @@ function renderPrefsPanel() {
                value="${Math.round(appSettings.textScale * 100)}" />
       </div>
       <div class="prefs-field">
+        <label class="prefs-toggle" for="prefsKeyboard">
+          <span>Keyboard assisted navigation</span>
+          <input id="prefsKeyboard" type="checkbox" ${appSettings.keyboardAssistedNavigation ? "checked" : ""}>
+        </label>
+        <small class="field-hint">${shortcutHelpText()}</small>
+      </div>
+    </section>
+    <button id="openPersonaliseButton" class="personalise-button" type="button">Personalise for me</button>`;
+  bindPrefsPanel(elements.prefsPanel);
+  elements.prefsPanel.querySelector("#openPersonaliseButton")?.addEventListener("click", openPersonalisePage);
+}
+
+function shortcutHelpText() {
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  return isMac
+    ? "Control–N opens a new knot; Control–W marks the focused knot done."
+    : "Alt–N opens a new knot; Alt–W marks the focused knot done.";
+}
+
+function openPersonalisePage() {
+  navigationTrail.push(captureNavigationPointer());
+  closePrefsPanel();
+  setUtilitySurface("personalise");
+  renderPersonalisePage();
+}
+
+function renderPersonalisePage() {
+  if (!elements.personaliseContent) return;
+  elements.personaliseContent.innerHTML = `
+    <section class="personalise-group" aria-labelledby="personaliseFilumTitle">
+      <h3 id="personaliseFilumTitle">Filum</h3>
+      <div class="prefs-field">
         <label for="prefsSpacing">Spacing</label>
         <select id="prefsSpacing">
           <option value="compact" ${appSettings.spacing === "compact" ? "selected" : ""}>Compact</option>
@@ -2851,29 +2997,42 @@ function renderPrefsPanel() {
       <div class="prefs-field">
         <label for="prefsAliases">Note keywords</label>
         <input id="prefsAliases" type="text" maxlength="120" autocomplete="off"
-               value="${escapeHtml(appSettings.noteAliases.join(", "))}" />
-        <small class="field-hint">A line starting with one of these words and a colon is tinted. Separate with commas.</small>
+               value="${escapeHtml(appSettings.noteAliases.join(", "))}">
+        <small class="field-hint">Separate keywords with commas.</small>
       </div>
       <div class="prefs-field">
         <span>Keyword shade</span>
         <div class="prefs-swatches">
           ${NOTE_SHADES.map(
-            (hex) => `
-              <button type="button" class="prefs-swatch ${hex === appSettings.noteColor ? "is-current" : ""}"
-                data-shade="${hex}" style="--swatch:${hex}" aria-label="Use shade ${hex}"></button>`
+            (hex) => `<button type="button" class="prefs-swatch ${hex === appSettings.noteColor ? "is-current" : ""}"
+              data-shade="${hex}" style="--swatch:${hex}" aria-label="Use shade ${hex}"></button>`
           ).join("")}
-          <input id="prefsColor" type="text" maxlength="7" autocomplete="off" aria-label="Keyword shade as hex"
-                 value="${escapeHtml(appSettings.noteColor)}" />
+          <input id="prefsColor" type="text" maxlength="7" autocomplete="off"
+                 aria-label="Keyword shade as hex" value="${escapeHtml(appSettings.noteColor)}">
         </div>
+      </div>
+      <div class="prefs-field">
+        <label class="prefs-toggle" for="prefsKeyboardAdvanced">
+          <span>Keyboard assisted navigation</span>
+          <input id="prefsKeyboardAdvanced" type="checkbox" ${appSettings.keyboardAssistedNavigation ? "checked" : ""}>
+        </label>
+        <small class="field-hint">${shortcutHelpText()}</small>
+      </div>
+      <div class="prefs-field">
+        <label class="prefs-toggle" for="prefsGitVersioning">
+          <span>Version thread JSON with Git</span>
+          <input id="prefsGitVersioning" type="checkbox" ${appSettings.gitVersioningEnabled ? "checked" : ""}>
+        </label>
+        <small class="field-hint">Keeps local history in Filum's data directory when Git is available.</small>
       </div>
     </section>
     <div id="circumspectionPrefsMount"></div>`;
-  bindPrefsPanel();
-  renderCircumspectionPreferences();
+  bindPrefsPanel(elements.personaliseContent);
+  renderCircumspectionPreferences(elements.personaliseContent);
 }
 
-function renderCircumspectionPreferences() {
-  const root = elements.prefsPanel.querySelector("#circumspectionPrefsMount");
+function renderCircumspectionPreferences(container = elements.prefsPanel) {
+  const root = container?.querySelector("#circumspectionPrefsMount");
   if (!root || typeof window === "undefined" || typeof CustomEvent !== "function") return;
   // The listener owns its markup, bindings, values, and persistence. In
   // particular, Circumspection settings never enter appSettings or the Filum
@@ -2885,14 +3044,17 @@ function renderCircumspectionPreferences() {
   );
 }
 
-function bindPrefsPanel() {
-  const exposureSelect = elements.prefsPanel.querySelector("#prefsExposure");
-  const textScaleInput = elements.prefsPanel.querySelector("#prefsTextScale");
-  const textScaleOutput = elements.prefsPanel.querySelector("#prefsTextScaleOutput");
-  const spacingSelect = elements.prefsPanel.querySelector("#prefsSpacing");
-  const motionSelect = elements.prefsPanel.querySelector("#prefsInterfaceMotion");
-  const aliasesInput = elements.prefsPanel.querySelector("#prefsAliases");
-  const colorInput = elements.prefsPanel.querySelector("#prefsColor");
+function bindPrefsPanel(root) {
+  if (!root) return;
+  const exposureSelect = root.querySelector("#prefsExposure");
+  const textScaleInput = root.querySelector("#prefsTextScale");
+  const textScaleOutput = root.querySelector("#prefsTextScaleOutput");
+  const spacingSelect = root.querySelector("#prefsSpacing");
+  const motionSelect = root.querySelector("#prefsInterfaceMotion");
+  const aliasesInput = root.querySelector("#prefsAliases");
+  const colorInput = root.querySelector("#prefsColor");
+  const keyboardInputs = root.querySelectorAll("#prefsKeyboard, #prefsKeyboardAdvanced");
+  const gitInput = root.querySelector("#prefsGitVersioning");
 
   if (exposureSelect) {
     exposureSelect.addEventListener("change", () => {
@@ -2955,7 +3117,7 @@ function bindPrefsPanel() {
     });
   }
 
-  elements.prefsPanel.querySelectorAll("[data-shade]").forEach((swatch) => {
+  root.querySelectorAll("[data-shade]").forEach((swatch) => {
     swatch.addEventListener("click", () => {
       appSettings.noteColor = swatch.dataset.shade;
       syncPrefsPanelValues();
@@ -2975,29 +3137,46 @@ function bindPrefsPanel() {
       persistSettings();
     });
   }
+  keyboardInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      appSettings.keyboardAssistedNavigation = input.checked;
+      persistSettings({ renderApp: false });
+      syncPrefsPanelValues();
+    });
+  });
+  gitInput?.addEventListener("change", () => {
+    appSettings.gitVersioningEnabled = gitInput.checked;
+    persistSettings({ renderApp: false });
+  });
 }
 
 function syncPrefsPanelValues() {
-  if (!elements.prefsPanel) return;
-  const setValue = (selector, value) => {
-    const control = elements.prefsPanel.querySelector(selector);
-    if (control) control.value = value;
-  };
-  setValue("#prefsExposure", appSettings.interfaceContrast);
-  setValue("#prefsTextScale", String(Math.round(appSettings.textScale * 100)));
-  setValue("#prefsSpacing", appSettings.spacing);
-  setValue("#prefsInterfaceMotion", appSettings.interfaceMotion);
-  setValue("#prefsAliases", appSettings.noteAliases.join(", "));
-  setValue("#prefsColor", appSettings.noteColor);
-
-  const output = elements.prefsPanel.querySelector("#prefsTextScaleOutput");
-  if (output) {
-    const label = `${Math.round(appSettings.textScale * 100)}%`;
-    output.value = label;
-    output.textContent = label;
-  }
-  elements.prefsPanel.querySelectorAll("[data-shade]").forEach((swatch) => {
-    swatch.classList.toggle("is-current", swatch.dataset.shade === appSettings.noteColor);
+  [elements.prefsPanel, elements.personaliseContent].forEach((root) => {
+    if (!root) return;
+    const setValue = (selector, value) => {
+      const control = root.querySelector(selector);
+      if (control) control.value = value;
+    };
+    setValue("#prefsExposure", appSettings.interfaceContrast);
+    setValue("#prefsTextScale", String(Math.round(appSettings.textScale * 100)));
+    setValue("#prefsSpacing", appSettings.spacing);
+    setValue("#prefsInterfaceMotion", appSettings.interfaceMotion);
+    setValue("#prefsAliases", appSettings.noteAliases.join(", "));
+    setValue("#prefsColor", appSettings.noteColor);
+    root.querySelectorAll("#prefsKeyboard, #prefsKeyboardAdvanced").forEach((input) => {
+      input.checked = appSettings.keyboardAssistedNavigation;
+    });
+    const gitInput = root.querySelector("#prefsGitVersioning");
+    if (gitInput) gitInput.checked = appSettings.gitVersioningEnabled;
+    const output = root.querySelector("#prefsTextScaleOutput");
+    if (output) {
+      const label = `${Math.round(appSettings.textScale * 100)}%`;
+      output.value = label;
+      output.textContent = label;
+    }
+    root.querySelectorAll("[data-shade]").forEach((swatch) => {
+      swatch.classList.toggle("is-current", swatch.dataset.shade === appSettings.noteColor);
+    });
   });
 }
 

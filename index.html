@@ -28,6 +28,8 @@
         </div>
         <button id="saveThreadButton" class="ghost-button thread-button" type="button">Rename</button>
         <button id="newThreadButton" class="ghost-button thread-button" type="button">Start new thread</button>
+        <button id="navigationBackButton" class="ghost-button thread-button navigation-back" type="button"
+                aria-label="Go back to the previous Filum state" hidden>← Back</button>
         <div class="prefs-menu">
           <button id="prefsButton" class="ghost-button thread-button" type="button"
                   aria-haspopup="true" aria-expanded="false" aria-controls="prefsPanel">Preferences</button>
@@ -77,8 +79,8 @@
       <main>
         <div id="findBar" class="find-bar" hidden>
           <input id="findInput" type="text" maxlength="120" autocomplete="off"
-                 placeholder="Find a knot — wrap in /slashes/ for a pattern"
-                 aria-label="Find within this thread" />
+                 placeholder="Search every active and archived thread — press Enter"
+                 aria-label="Search threads" />
           <div id="findResults" class="find-results" role="listbox" aria-label="Matching knots"></div>
         </div>
 
@@ -152,7 +154,9 @@
               <h2>Choose the order</h2>
             </div>
             <div class="panel-header-actions">
-              <button id="findPlanButton" class="ghost-button" type="button" hidden>Find</button>
+              <button id="findPlanButton" class="ghost-button icon-button" type="button" hidden aria-label="Search threads">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>
+              </button>
               <button id="toLineButton" class="primary-button" type="button">Untangle it</button>
             </div>
           </div>
@@ -173,7 +177,9 @@
               <h2>The clear thread</h2>
             </div>
             <div class="focus-nav">
-              <button id="findLineButton" class="ghost-button" type="button" hidden>Find</button>
+              <button id="findLineButton" class="ghost-button icon-button" type="button" hidden aria-label="Search threads">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>
+              </button>
               <button id="retrospectButton" class="ghost-button" type="button" hidden aria-pressed="false">Retrospect</button>
               <button id="focusPrevButton" class="ghost-button" type="button">Previous task</button>
               <button id="focusNextButton" class="secondary-button" type="button">Next task</button>
@@ -201,6 +207,27 @@
           </div>
         </section>
       </main>
+
+      <section id="searchPage" class="utility-page" aria-labelledby="searchPageTitle" hidden>
+        <header class="utility-page-header">
+          <div>
+            <p class="section-label">Across active and archived threads</p>
+            <h2 id="searchPageTitle">Search catalogue</h2>
+          </div>
+        </header>
+        <p id="searchPageSummary" class="utility-page-summary"></p>
+        <div id="searchPageResults" class="search-catalogue" aria-live="polite"></div>
+      </section>
+
+      <section id="personalisePage" class="utility-page personalise-page" aria-labelledby="personalisePageTitle" hidden>
+        <header class="utility-page-header">
+          <div>
+            <p class="section-label">Personalisation</p>
+            <h2 id="personalisePageTitle">Personalise for me</h2>
+          </div>
+        </header>
+        <div id="personaliseContent" class="personalise-content"></div>
+      </section>
     </div>
 
     <section id="circRoot" class="circ-root" hidden aria-label="Circumspection">

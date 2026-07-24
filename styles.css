@@ -324,6 +324,9 @@ textarea {
 .thread-button {
   padding: 6px 14px;
   font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+  border-color: var(--line-strong);
 }
 
 .thread-status {
@@ -888,8 +891,8 @@ textarea:focus {
 
 .ghost-button {
   background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--line);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
 }
 
 /* A ghost button acting as a pressed toggle (the Retrospect view). */
@@ -933,6 +936,192 @@ textarea:focus {
 .find-bar input {
   padding: 10px 14px;
   border-radius: 12px;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.icon-button svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.navigation-back {
+  order: -1;
+}
+
+body.is-utility-page .app-shell > .hero,
+body.is-utility-page .app-shell > .stepper,
+body.is-utility-page .app-shell > main {
+  display: none;
+}
+
+.utility-page {
+  width: min(980px, calc(100vw - 40px));
+  min-height: calc(100dvh - 120px);
+  margin: 36px auto 0;
+  padding: clamp(28px, 5vw, 60px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow: var(--shadow);
+}
+
+.utility-page[hidden] {
+  display: none;
+}
+
+.utility-page-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.utility-page-header h2 {
+  margin: 5px 0 0;
+  font-size: clamp(2.1rem, 5vw, 3.7rem);
+}
+
+.utility-page-summary {
+  margin: 20px 0;
+  color: var(--muted);
+}
+
+.search-catalogue {
+  display: grid;
+}
+
+.search-catalogue-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.search-catalogue-row button {
+  display: grid;
+  grid-template-columns: 90px minmax(180px, 0.8fr) minmax(180px, 1fr);
+  gap: 8px 18px;
+  align-items: baseline;
+  width: 100%;
+  padding: 20px 10px;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search-catalogue-row button:hover,
+.search-catalogue-row button:focus-visible {
+  background: rgba(231, 223, 208, 0.42);
+  outline: 2px solid var(--line-strong);
+  outline-offset: -2px;
+}
+
+.search-catalogue-scope,
+.search-catalogue-row small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.search-catalogue-row small {
+  grid-column: 2 / -1;
+}
+
+.utility-empty {
+  padding: 56px 10px;
+  color: var(--muted);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-style: italic;
+}
+
+.personalise-button {
+  width: 100%;
+  margin-top: 14px;
+  padding: 13px 16px;
+  border: 1px solid #efd28f;
+  border-radius: 12px;
+  color: #171615;
+  background: #efd28f;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.prefs-toggle {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.prefs-toggle input {
+  width: 42px;
+  height: 22px;
+  accent-color: #d7b66f;
+}
+
+.personalise-content {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  margin-top: 28px;
+}
+
+.personalise-group,
+.personalise-content .circ-prefs-group {
+  margin: 0;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.personalise-group h3,
+.personalise-content .circ-prefs-title {
+  margin: 0 0 20px;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-size: 1.35rem;
+}
+
+.personalise-content .prefs-field label,
+.personalise-content .prefs-field > span,
+.personalise-content .circ-pref-field label,
+.personalise-content .circ-pref-field output {
+  color: var(--ink);
+}
+
+.personalise-content .circ-pref-field small {
+  color: var(--muted);
+}
+
+.personalise-content input,
+.personalise-content select {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: rgba(252, 250, 245, 0.92);
+}
+
+@media (max-width: 760px) {
+  .search-catalogue-row button {
+    grid-template-columns: 1fr;
+  }
+  .search-catalogue-row small {
+    grid-column: 1;
+  }
+  .personalise-content {
+    grid-template-columns: 1fr;
+  }
 }
 
 .find-results {
