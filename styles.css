@@ -3044,3 +3044,220 @@ button.circ-entry-main:focus-visible {
   .journey-title { fill: CanvasText; }
   .journey-card { border-color: CanvasText; }
 }
+
+/* ---- Notes, references, abbreviations ---------------------------------- */
+
+.focus-notes .note-paragraph {
+  margin: 0 0 0.6em;
+}
+
+.focus-notes .note-paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.note-list .note-list {
+  margin: 2px 0;
+}
+
+/* An expanded abbreviation reads as plain text; the short form waits in the
+   title for anyone who hovers. No underline, no colour. */
+abbr.abbr-expanded {
+  text-decoration: none;
+  cursor: inherit;
+}
+
+/* Image references look like thread references, with a small picture mark. */
+.image-reference::before,
+.thread-reference--image .thread-reference-label::before {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.55em;
+  margin-right: 5px;
+  border: 1.25px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.6;
+  vertical-align: 0.02em;
+}
+
+.rich-mention-group {
+  display: block;
+  padding: 6px 8px 2px;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.rich-mention-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rich-mention-thumb {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+/* The read-only tray's thumbnails are buttons now (they open the viewer). */
+button.attachment-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+button.attachment-link:focus-visible {
+  outline: 2px solid var(--line-strong);
+  outline-offset: 3px;
+}
+
+/* ---- Image viewer ------------------------------------------------------- */
+
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 16px;
+  padding: 24px;
+  background: rgba(245, 241, 232, 0.94);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 180ms ease;
+  cursor: zoom-out;
+}
+
+.image-viewer.is-open {
+  opacity: 1;
+}
+
+.image-viewer-figure {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  margin: 0;
+}
+
+.image-viewer-img {
+  display: block;
+  max-width: min(92vw, 1100px);
+  max-height: 78vh;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  background: var(--bg-soft);
+  cursor: default;
+}
+
+.image-viewer-caption {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.image-viewer-controls {
+  display: flex;
+  gap: 8px;
+  cursor: default;
+}
+
+:root[data-interface-motion="none"] .image-viewer,
+:root[data-interface-motion="quiet"] .image-viewer {
+  transition: none;
+}
+
+/* ---- Abbreviations in Preferences (dark pop-down) ----------------------- */
+
+.prefs-abbreviations {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 238, 201, 0.16);
+}
+
+.abbr-list {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.abbr-row {
+  display: grid;
+  grid-template-columns: minmax(48px, auto) 1fr auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 4px 6px 10px;
+  border-radius: 10px;
+  background: rgba(255, 248, 232, 0.05);
+}
+
+.abbr-short {
+  font-weight: 600;
+  color: #fff8e8;
+}
+
+.abbr-full {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(255, 248, 232, 0.78);
+}
+
+.abbr-remove {
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: rgba(255, 248, 232, 0.55);
+  font-size: 1rem;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 180ms ease;
+}
+
+.abbr-remove:hover,
+.abbr-remove:focus-visible {
+  color: #fff8e8;
+}
+
+.abbr-add {
+  display: grid;
+  grid-template-columns: minmax(64px, 0.6fr) 1.4fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.abbr-add input[type="text"] {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.prefs-pop .abbr-add .ghost-button {
+  color: #fff8e8;
+  border-color: rgba(255, 238, 201, 0.4);
+}
+
+/* Circumspection's field takes focus (not a caret) when a written leaf is
+   opened; it needs no ring of its own. */
+.circ-field:focus {
+  outline: none;
+}
+
+/* Nested lists sit snugly under their parent item; only the outer list
+   takes block spacing. Covers both nested-in-item and Chrome's
+   list-inside-list structure. */
+.rich-surface :is(ul, ol) :is(ul, ol),
+.focus-notes :is(ul, ol) :is(ul, ol) {
+  margin-top: 0.15em;
+  margin-bottom: 0.15em;
+}

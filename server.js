@@ -366,7 +366,28 @@ function defaultSettings() {
     interfaceMotion: "full",
     keyboardAssistedNavigation: true,
     gitVersioningEnabled: false,
+    abbreviations: [],
   };
+}
+
+// Personal abbreviations — same rules as normalizeAbbreviations() in app.js.
+const ABBREVIATION_SHORT = /^[\p{L}\p{N}][\p{L}\p{N}'._-]{0,15}$/u;
+const MAX_ABBREVIATIONS = 50;
+
+function sanitizeAbbreviations(raw) {
+  if (!Array.isArray(raw) || raw.length > MAX_ABBREVIATIONS) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const short = typeof item.short === "string" ? item.short.trim() : "";
+    const full = typeof item.full === "string" ? item.full.replace(/\s+/g, " ").trim() : "";
+    if (!ABBREVIATION_SHORT.test(short) || !full || full.length > 120) return null;
+    if (seen.has(short.toLowerCase())) return null;
+    seen.add(short.toLowerCase());
+    out.push({ short, full });
+  }
+  return out;
 }
 
 // Pick known keys only, validate each; return null when the body is unusable.
@@ -421,6 +442,11 @@ function sanitizeSettings(body) {
   if (body.gitVersioningEnabled !== undefined) {
     if (typeof body.gitVersioningEnabled !== "boolean") return null;
     out.gitVersioningEnabled = body.gitVersioningEnabled;
+  }
+  if (body.abbreviations !== undefined) {
+    const abbreviations = sanitizeAbbreviations(body.abbreviations);
+    if (!abbreviations) return null;
+    out.abbreviations = abbreviations;
   }
   return out;
 }

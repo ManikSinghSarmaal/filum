@@ -683,6 +683,7 @@ function bindEvents() {
   if (elements.taskNotes) {
     captureNotesEditor = bindMarkShortcuts(elements.taskNotes, {
       onPaste: (event) => handleImagePaste(event, captureImages, renderCaptureAttachments),
+      images: () => captureImages,
     });
   }
   if (elements.focusNextButton) {
@@ -790,6 +791,15 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !target.isConnected) return;
+    const imageButton = target.closest("[data-view-image], [data-image-ref]");
+    if (imageButton && !target.closest("[contenteditable='true']")) {
+      event.preventDefault();
+      const id = imageButton.dataset.viewImage || imageButton.dataset.imageRef;
+      const images = imagesForReference(id);
+      if (images) openImageViewer(images, id);
+      else setStatus("That image is no longer attached");
+      return;
+    }
     const threadReference = target.closest("[data-thread-ref]");
     if (threadReference && !target.closest("[contenteditable='true']")) {
       event.preventDefault();
@@ -814,7 +824,8 @@ function bindEvents() {
       if (prefsOpen) closePrefsPanel();
     }
     const typing =
-      event.target.closest("input, textarea, select, [contenteditable='true']") ||
+      (event.target instanceof Element &&
+        event.target.closest("input, textarea, select, [contenteditable='true']")) ||
       editingTaskId !== null;
     const wantsFind =
       (event.key === "/" && !typing) ||
@@ -1540,7 +1551,7 @@ function renderTaskPreview() {
       return `
         <article class="task-chip">
           <div class="task-chip-head">
-            <strong>${escapeHtml(task.title)}</strong>
+            <strong>${expandHtml(task.title)}</strong>
             <button class="ghost-button mini-edit" type="button" data-edit-task="${task.id}">Edit</button>
           </div>
           <p>${linkify(summarizeTask(task))}</p>
@@ -1628,7 +1639,7 @@ function renderPlanningList() {
           <button class="drag-handle" type="button" tabindex="-1" aria-hidden="true"></button>
           <div class="plan-item-head">
             <div>
-              <strong>${index + 1}. ${escapeHtml(task.title)}</strong>
+              <strong>${index + 1}. ${expandHtml(task.title)}</strong>
               <p>${linkify(summarizeTask(task))}</p>
               ${renderThumbStrip(task.images)}
             </div>
@@ -1820,7 +1831,7 @@ function renderLine() {
     elements.focusNotes.innerHTML =
       '<span class="focus-notes-empty">Every knot on this thread is loose.</span>';
   } else if (currentTask) {
-    elements.focusTitle.textContent = currentTask.title;
+    elements.focusTitle.innerHTML = expandHtml(currentTask.title);
     elements.focusNotes.innerHTML = currentTask.notes
       ? renderRichNotes(currentTask.notes)
       : '<span class="focus-notes-empty">No extra notes. Just begin.</span>';
@@ -1854,7 +1865,7 @@ function renderLine() {
         return `
           <article class="linear-item is-done" data-task-id="${task.id}">
             <div class="linear-item-index">Step ${index + 1}</div>
-            <strong>${escapeHtml(task.title)}</strong>
+            <strong>${expandHtml(task.title)}</strong>
             <p>done${escapeHtml(when)}</p>
             <button class="ghost-button mini-edit linear-restore" type="button" data-restore-task="${task.id}">Return to thread</button>
           </article>
@@ -1868,7 +1879,7 @@ function renderLine() {
           tabindex="0"
           ${isCurrent ? 'aria-current="step"' : ""}>
           <div class="linear-item-index">Step ${index + 1}</div>
-          <strong>${escapeHtml(task.title)}</strong>
+          <strong>${expandHtml(task.title)}</strong>
           <p>${escapeHtml(lineCardSubtitle(task))}</p>
         </article>
       `;
@@ -2604,7 +2615,7 @@ function easeInOutCubic(t) {
 }
 
 function summarizeTask(task) {
-  return task.notes ? truncate(task.notes, 140) : "No notes yet";
+  return task.notes ? truncate(expandPlain(task.notes), 140) : "No notes yet";
 }
 
 function clamp(value, min, max) {
@@ -2673,6 +2684,13 @@ function inlineMarkup(raw) {
 
   let work = String(raw == null ? "" : raw);
   work = work.replace(
+    /@\[([^\]]+)\]\(filum:image\/([a-z0-9-]{8,64})\)/gi,
+    (m, label, id) =>
+      stash(
+        `<button class="thread-reference image-reference" type="button" data-image-ref="${escapeHtml(id)}">@${escapeHtml(label)}</button>`
+      )
+  );
+  work = work.replace(
     /@\[([^\]]+)\]\(filum:thread\/([a-z0-9-]{8,64})\)/gi,
     (m, label, id) =>
       stash(
@@ -2695,11 +2713,14 @@ function inlineMarkup(raw) {
       `<a class="rich-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlText)}</a>`
     );
   });
+  // Abbreviations expand after links and code are set aside, so an address
+  // or a code span is never rewritten.
+  if (abbreviationRegex) work = work.replace(abbreviationRegex, (match) => stash(abbreviationHtml(match)));
 
   let out = escapeHtml(work);
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  out = out.replace(/__([^_]+)__/g, "<u>$1</u>");
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__(.+?)__/g, "<u>$1</u>");
+  out = out.replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, "$1<em>$2</em>");
   return out.replace(/\x00(\d+)\x00/g, (m, i) => tokens[Number(i)]);
 }
 
@@ -2710,81 +2731,20 @@ function renderNoteLine(line) {
     : html;
 }
 
+// The block structure (paragraphs, nested lists, numbering, code) comes from
+// the same parser the editor uses, so what reads here is exactly what was
+// written there; only the inline pass is the read view's own.
 function renderRichNotes(notes) {
   const raw = String(notes == null ? "" : notes).replace(/\r\n/g, "\n");
-  const lines = raw.split("\n");
-  const blocks = [];
-  let plainRun = [];
-  let listRun = [];
-  let orderedRun = [];
-  let fenceRun = null;
-
-  const flushPlain = () => {
-    if (plainRun.length) {
-      blocks.push(plainRun.map(renderNoteLine).join("<br />"));
-      plainRun = [];
-    }
-  };
-  const flushList = () => {
-    if (listRun.length) {
-      blocks.push(
-        `<ul class="note-list">${listRun.map((item) => `<li>${inlineMarkup(item)}</li>`).join("")}</ul>`
-      );
-      listRun = [];
-    }
-  };
-  const flushOrdered = () => {
-    if (orderedRun.length) {
-      blocks.push(
-        `<ol class="note-list">${orderedRun.map((item) => `<li>${inlineMarkup(item)}</li>`).join("")}</ol>`
-      );
-      orderedRun = [];
-    }
-  };
-
-  for (const line of lines) {
-    if (fenceRun) {
-      if (line.trim().startsWith("```")) {
-        blocks.push(`<pre class="note-code">${escapeHtml(fenceRun.join("\n"))}</pre>`);
-        fenceRun = null;
-      } else {
-        fenceRun.push(line);
-      }
-      continue;
-    }
-    if (line.trim().startsWith("```")) {
-      flushPlain();
-      flushList();
-      flushOrdered();
-      fenceRun = [];
-      continue;
-    }
-    const listMatch = line.match(/^\s*-\s+(.*)$/);
-    const orderedMatch = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (listMatch) {
-      flushPlain();
-      flushOrdered();
-      listRun.push(listMatch[1]);
-      continue;
-    }
-    if (orderedMatch) {
-      flushPlain();
-      flushList();
-      orderedRun.push(orderedMatch[1]);
-      continue;
-    }
-    flushList();
-    flushOrdered();
-    plainRun.push(line);
+  if (window.FilumRichText?.markdownToHtml) {
+    return window.FilumRichText.markdownToHtml(raw, {
+      inline: renderNoteLine,
+      listClass: "note-list",
+      preClass: "note-code",
+      paragraphClass: "note-paragraph",
+    });
   }
-  if (fenceRun) {
-    // Unclosed fence: render what is there rather than losing it.
-    blocks.push(`<pre class="note-code">${escapeHtml(fenceRun.join("\n"))}</pre>`);
-  }
-  flushPlain();
-  flushList();
-  flushOrdered();
-  return blocks.join("");
+  return raw.split("\n").map(renderNoteLine).join("<br />");
 }
 
 function renderThumbStrip(images) {
@@ -2825,7 +2785,9 @@ function renderEditableTray(container, images, onRemove) {
   });
 }
 
-// Read-only tray (focus card): thumbnails that open full size in a new tab.
+// Read-only tray (focus card): thumbnails that open full size in place.
+// Images live inside the thread JSON as data: URLs, and Chrome refuses to
+// open a data: URL in a new tab — so the viewer is part of the page.
 function renderReadonlyTray(container, images) {
   if (!container) return;
   if (!Array.isArray(images) || !images.length) {
@@ -2837,18 +2799,19 @@ function renderReadonlyTray(container, images) {
   container.innerHTML = images
     .map(
       (img) => `
-        <a class="attachment-link" href="${escapeHtml(img.src)}" target="_blank" rel="noopener noreferrer">
+        <button class="attachment-link" type="button" data-view-image="${escapeHtml(img.id)}"
+                aria-label="View ${escapeHtml(img.alt || "reference image")}">
           <img class="thumb thumb--lg" src="${escapeHtml(img.src)}" alt="${escapeHtml(
             img.alt || "reference image"
           )}" loading="lazy" />
-        </a>`
+        </button>`
     )
     .join("");
 }
 
 // Step 3 card subtitle: the start of the notes, or a quiet placeholder.
 function lineCardSubtitle(task) {
-  if (task.notes && task.notes.trim()) return truncate(task.notes, 70);
+  if (task.notes && task.notes.trim()) return truncate(expandPlain(task.notes), 70);
   return "No details yet";
 }
 
@@ -3079,6 +3042,7 @@ function bindInlineEditor() {
   if (notes) {
     inlineNotesEditor = bindMarkShortcuts(notes, {
       onPaste: (event) => handleImagePaste(event, editingImages, renderTray),
+      images: () => editingImages,
     });
   }
 
@@ -3096,17 +3060,129 @@ function bindInlineEditor() {
   });
 }
 
+// options.images: a getter for the images attached to the task being
+// written, so "@" can reference them alongside threads. Only this task's own
+// images are offered.
 function bindMarkShortcuts(textarea, options = {}) {
   if (!window.FilumRichText) return null;
+  const { images, ...rest } = options;
+  const imageList = () => (typeof images === "function" ? images() || [] : []);
   return window.FilumRichText.enhance(textarea, {
     toolbarPosition: "bottom",
-    mentionProvider: (query) =>
-      threadList
+    mentionProvider: (query) => {
+      const pictures = imageList()
+        .map((img, index) => ({
+          id: img.id,
+          name: imageLabel(img, index),
+          kind: "image",
+          thumb: img.src,
+          group: "Images in this task",
+        }))
+        .filter((item) => !query || item.name.toLowerCase().includes(query));
+      const threads = threadList
         .filter((thread) => !query || (thread.name || "Untitled thread").toLowerCase().includes(query))
-        .map((thread) => ({ id: thread.id, name: thread.name || "Untitled thread" })),
+        .map((thread) => ({
+          id: thread.id,
+          name: thread.name || "Untitled thread",
+          kind: "thread",
+          group: pictures.length ? "Threads" : undefined,
+        }));
+      return [...pictures, ...threads];
+    },
     onThreadReference: (id) => navigateToReferencedThread(id),
-    ...options,
+    onImageReference: (id) => {
+      const list = imageList();
+      if (list.some((img) => img.id === id)) openImageViewer(list, id);
+    },
+    ...rest,
   });
+}
+
+function imageLabel(img, index) {
+  return img.alt ? truncate(img.alt, 24) : `Image ${index + 1}`;
+}
+
+// ---- Image viewer ------------------------------------------------------------
+//
+// A quiet in-page view of one attached image: cream veil, the image, nothing
+// else. Escape, a click outside, or the close control returns. With several
+// images, ← and → step between them.
+let imageViewer = null;
+
+function openImageViewer(images, startId) {
+  const list = (images || []).filter((img) => img && typeof img.src === "string" && img.src);
+  if (!list.length) return;
+  let index = Math.max(0, list.findIndex((img) => img.id === startId));
+  const restore = document.activeElement;
+  closeImageViewer(false);
+  const overlay = document.createElement("div");
+  overlay.className = "image-viewer";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.innerHTML = `
+    <figure class="image-viewer-figure">
+      <img class="image-viewer-img" alt="" />
+      <figcaption class="image-viewer-caption"></figcaption>
+    </figure>
+    <div class="image-viewer-controls">
+      <button class="ghost-button mini-edit" type="button" data-viewer-prev ${list.length > 1 ? "" : "hidden"} aria-label="Previous image">←</button>
+      <button class="ghost-button mini-edit" type="button" data-viewer-close>Close</button>
+      <button class="ghost-button mini-edit" type="button" data-viewer-next ${list.length > 1 ? "" : "hidden"} aria-label="Next image">→</button>
+    </div>`;
+  const show = () => {
+    const img = list[index];
+    overlay.querySelector(".image-viewer-img").src = img.src;
+    overlay.querySelector(".image-viewer-img").alt = img.alt || imageLabel(img, index);
+    overlay.querySelector(".image-viewer-caption").textContent =
+      list.length > 1 ? `${imageLabel(img, index)} · ${index + 1} of ${list.length}` : imageLabel(img, index);
+    overlay.setAttribute("aria-label", imageLabel(img, index));
+  };
+  const step = (delta) => {
+    index = (index + delta + list.length) % list.length;
+    show();
+  };
+  overlay.addEventListener("click", (event) => {
+    if (event.target.closest("[data-viewer-prev]")) return step(-1);
+    if (event.target.closest("[data-viewer-next]")) return step(1);
+    if (event.target.closest("[data-viewer-close]") || !event.target.closest(".image-viewer-img")) closeImageViewer(true);
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeImageViewer(true);
+    } else if (event.key === "ArrowRight" && list.length > 1) step(1);
+    else if (event.key === "ArrowLeft" && list.length > 1) step(-1);
+    else if (event.key === "Tab") {
+      // Keep focus inside the viewer while it is open.
+      const controls = [...overlay.querySelectorAll("button:not([hidden])")];
+      const at = controls.indexOf(document.activeElement);
+      event.preventDefault();
+      controls[(at + (event.shiftKey ? -1 : 1) + controls.length) % controls.length]?.focus();
+    }
+  });
+  imageViewer = { overlay, restore };
+  show();
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("is-open"));
+  overlay.querySelector("[data-viewer-close]").focus({ preventScroll: true });
+}
+
+function closeImageViewer(restoreFocus) {
+  if (!imageViewer) return;
+  const { overlay, restore } = imageViewer;
+  imageViewer = null;
+  overlay.remove();
+  if (restoreFocus && restore && typeof restore.focus === "function" && restore.isConnected) {
+    restore.focus({ preventScroll: true });
+  }
+}
+
+function imagesForReference(imageId) {
+  const focused = state.tasks[state.focusIndex];
+  if (focused && focused.images.some((img) => img.id === imageId)) return focused.images;
+  const owner = state.tasks.find((task) => task.images.some((img) => img.id === imageId));
+  return owner ? owner.images : null;
 }
 
 // ---- Find within the thread -------------------------------------------------
@@ -3410,7 +3486,31 @@ function defaultSettings() {
     noteColor: NOTE_SHADES[0],
     keyboardAssistedNavigation: true,
     gitVersioningEnabled: false,
+    abbreviations: [],
   };
+}
+
+// Personal abbreviations: written short, read in full. Shared shape with
+// server.js sanitizeSettings — keep the two rules in step.
+const ABBREVIATION_SHORT = /^[\p{L}\p{N}][\p{L}\p{N}'._-]{0,15}$/u;
+const MAX_ABBREVIATIONS = 50;
+
+function normalizeAbbreviations(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const short = typeof item.short === "string" ? item.short.trim() : "";
+    const full = typeof item.full === "string" ? item.full.replace(/\s+/g, " ").trim() : "";
+    if (!ABBREVIATION_SHORT.test(short) || !full || full.length > 120) continue;
+    const key = short.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ short, full });
+    if (out.length >= MAX_ABBREVIATIONS) break;
+  }
+  return out;
 }
 
 function normalizeSettings(raw) {
@@ -3445,6 +3545,7 @@ function normalizeSettings(raw) {
   if (typeof raw.gitVersioningEnabled === "boolean") {
     base.gitVersioningEnabled = raw.gitVersioningEnabled;
   }
+  base.abbreviations = normalizeAbbreviations(raw.abbreviations);
   return base;
 }
 
@@ -3468,6 +3569,54 @@ function applySettings() {
   root.style.setProperty("--note-label", appSettings.noteColor);
   const aliases = appSettings.noteAliases.map(escapeRegex).filter(Boolean);
   noteLabelRegex = aliases.length ? new RegExp(`^\\s*(?:${aliases.join("|")})\\s*:`, "i") : null;
+  buildAbbreviationIndex();
+}
+
+// ---- Abbreviations (read views only) ----------------------------------------
+//
+// "aca" written anywhere reads as "also called as" wherever Filum shows text
+// for reading. Editors always keep exactly what was typed. Matches are whole
+// words, case-insensitive; the original stays available as the <abbr> title.
+let abbreviationRegex = null;
+let abbreviationMap = new Map();
+
+function buildAbbreviationIndex() {
+  const list = Array.isArray(appSettings.abbreviations) ? appSettings.abbreviations : [];
+  abbreviationMap = new Map(list.map((item) => [item.short.toLowerCase(), item]));
+  const alternatives = list
+    .map((item) => item.short)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegex);
+  abbreviationRegex = alternatives.length
+    ? new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}_])`, "giu")
+    : null;
+}
+
+function expandPlain(text) {
+  const raw = String(text == null ? "" : text);
+  if (!abbreviationRegex) return raw;
+  return raw.replace(abbreviationRegex, (match) => abbreviationMap.get(match.toLowerCase())?.full || match);
+}
+
+function abbreviationHtml(match) {
+  const item = abbreviationMap.get(match.toLowerCase());
+  if (!item) return escapeHtml(match);
+  return `<abbr class="abbr-expanded" title="${escapeHtml(match)}">${escapeHtml(item.full)}</abbr>`;
+}
+
+// Escape for HTML, expanding abbreviations into quiet <abbr> elements.
+function expandHtml(text) {
+  const raw = String(text == null ? "" : text);
+  if (!abbreviationRegex) return escapeHtml(raw);
+  let out = "";
+  let last = 0;
+  abbreviationRegex.lastIndex = 0;
+  let match;
+  while ((match = abbreviationRegex.exec(raw)) !== null) {
+    out += escapeHtml(raw.slice(last, match.index)) + abbreviationHtml(match[0]);
+    last = match.index + match[0].length;
+  }
+  return out + escapeHtml(raw.slice(last));
 }
 
 async function persistSettings({ renderApp = true } = {}) {
@@ -3566,9 +3715,89 @@ function renderPrefsPanel() {
         <small class="field-hint">${shortcutHelpText()}</small>
       </div>
     </section>
+    <section class="prefs-section prefs-abbreviations" aria-labelledby="prefsAbbrTitle">
+      <h3 id="prefsAbbrTitle" class="prefs-section-title">Abbreviations</h3>
+      <ul id="prefsAbbrList" class="abbr-list"></ul>
+      <div class="abbr-add">
+        <input id="prefsAbbrShort" type="text" maxlength="16" autocomplete="off" spellcheck="false"
+               placeholder="aca" aria-label="Abbreviation">
+        <input id="prefsAbbrFull" type="text" maxlength="120" autocomplete="off"
+               placeholder="also called as" aria-label="Reads as">
+        <button id="prefsAbbrAdd" class="ghost-button mini-edit" type="button">Add</button>
+      </div>
+      <small class="field-hint">Written short anywhere, read in full. Editors keep what you typed.</small>
+    </section>
     <button id="openPersonaliseButton" class="personalise-button" type="button">Personalise for me</button>`;
   bindPrefsPanel(elements.prefsPanel);
+  bindAbbreviationPrefs(elements.prefsPanel);
   elements.prefsPanel.querySelector("#openPersonaliseButton")?.addEventListener("click", openPersonalisePage);
+}
+
+function renderAbbreviationList(root) {
+  const list = root.querySelector("#prefsAbbrList");
+  if (!list) return;
+  const items = appSettings.abbreviations || [];
+  list.hidden = !items.length;
+  list.innerHTML = items
+    .map(
+      (item) => `
+        <li class="abbr-row">
+          <span class="abbr-short">${escapeHtml(item.short)}</span>
+          <span class="abbr-full">${escapeHtml(item.full)}</span>
+          <button class="abbr-remove" type="button" data-abbr-remove="${escapeHtml(item.short)}"
+                  aria-label="Remove ${escapeHtml(item.short)}">×</button>
+        </li>`
+    )
+    .join("");
+}
+
+function bindAbbreviationPrefs(root) {
+  const shortInput = root.querySelector("#prefsAbbrShort");
+  const fullInput = root.querySelector("#prefsAbbrFull");
+  const addButton = root.querySelector("#prefsAbbrAdd");
+  if (!shortInput || !fullInput || !addButton) return;
+  renderAbbreviationList(root);
+  const add = () => {
+    const short = shortInput.value.trim();
+    const full = fullInput.value.replace(/\s+/g, " ").trim();
+    if (!ABBREVIATION_SHORT.test(short)) {
+      shortInput.focus();
+      return;
+    }
+    if (!full) {
+      fullInput.focus();
+      return;
+    }
+    const others = (appSettings.abbreviations || []).filter((item) => item.short.toLowerCase() !== short.toLowerCase());
+    if (others.length >= MAX_ABBREVIATIONS) {
+      setStatus(`Up to ${MAX_ABBREVIATIONS} abbreviations`);
+      return;
+    }
+    appSettings.abbreviations = [...others, { short, full }];
+    shortInput.value = "";
+    fullInput.value = "";
+    renderAbbreviationList(root);
+    persistSettings();
+    shortInput.focus();
+  };
+  addButton.addEventListener("click", add);
+  [shortInput, fullInput].forEach((input) =>
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (input === shortInput && !fullInput.value.trim()) fullInput.focus();
+      else add();
+    })
+  );
+  root.querySelector("#prefsAbbrList")?.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-abbr-remove]");
+    if (!remove) return;
+    const key = remove.dataset.abbrRemove.toLowerCase();
+    appSettings.abbreviations = (appSettings.abbreviations || []).filter((item) => item.short.toLowerCase() !== key);
+    renderAbbreviationList(root);
+    persistSettings();
+    shortInput.focus();
+  });
 }
 
 function shortcutHelpText() {
