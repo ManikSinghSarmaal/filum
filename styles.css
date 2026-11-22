@@ -2730,3 +2730,317 @@ button.circ-entry-main:focus-visible {
   .circ-settle-control:focus-visible { outline: 2px solid ButtonText; }
   .circ-field::before { background: ButtonText; }
 }
+
+/* ---- Web Journey trail ------------------------------------------------- */
+/* Trails captured by the browser extension, opened from the focus card's
+   quiet "✦ Web journey" button. Existing tokens only — see the Web Journey
+   entry in design.md's drift log. Curves, not corners; arrival, not motion. */
+
+.journey-panel {
+  width: 100%;
+  margin-top: 16px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  animation: journey-arrive 360ms ease both;
+}
+
+@keyframes journey-arrive {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.journey-trail + .journey-trail {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px dashed var(--line);
+}
+
+.journey-trail-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.journey-trail-label {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.journey-trail-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 420px;
+  padding: 4px 10px;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-size: 1rem;
+  color: var(--ink);
+  background: var(--bg-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+}
+
+.journey-trail-input:focus {
+  outline: 2px solid var(--line-strong);
+  outline-offset: 2px;
+}
+
+/* Edit and remove stay out of sight at rest and arrive on hover or focus. */
+.journey-trail-edit,
+.journey-trail-remove {
+  flex: none;
+  padding: 2px 4px;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 180ms ease, color 180ms ease;
+}
+
+.journey-trail-remove {
+  margin-left: auto;
+}
+
+.journey-trail:hover .journey-trail-edit,
+.journey-trail:hover .journey-trail-remove,
+.journey-trail:focus-within .journey-trail-edit,
+.journey-trail:focus-within .journey-trail-remove {
+  opacity: 1;
+}
+
+.journey-trail-edit:hover,
+.journey-trail-remove:hover {
+  color: var(--ink);
+}
+
+.journey-trail-edit:focus-visible,
+.journey-trail-remove:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--line-strong);
+  outline-offset: 2px;
+}
+
+.journey-remove-narrow { display: none; font-size: 1rem; }
+
+.journey-trail-time {
+  margin: 0 0 8px;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--muted);
+}
+
+.journey-trail-note {
+  margin: 8px 0 0;
+  max-width: 56ch;
+  font-size: 0.8125rem;
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.journey-svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.journey-path {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+
+.journey-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.journey-hit {
+  fill: transparent;
+}
+
+.journey-dot {
+  fill: var(--muted);
+  transition: r 180ms ease, fill 180ms ease;
+}
+
+.journey-node.is-anchor .journey-dot {
+  fill: var(--ink);
+}
+
+.journey-node:hover .journey-dot,
+.journey-node:focus-visible .journey-dot {
+  r: 9;
+  fill: var(--ink);
+}
+
+.journey-node.is-anchor:hover .journey-dot,
+.journey-node.is-anchor:focus-visible .journey-dot {
+  r: 10;
+}
+
+.journey-title {
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  fill: var(--ink);
+  transition: fill 180ms ease;
+}
+
+.journey-node:not(.is-anchor) .journey-title {
+  fill: var(--muted);
+}
+
+.journey-node.is-anchor .journey-title {
+  font-weight: 600;
+}
+
+.journey-node:hover .journey-title,
+.journey-node:focus-visible .journey-title {
+  fill: var(--ink);
+}
+
+.journey-node:focus-visible .journey-hit {
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+}
+
+/* The déjà vu card: the page's own words, its picture, how you arrived. */
+.journey-card {
+  position: fixed;
+  z-index: 100;
+  width: max-content;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 16px;
+  background: var(--panel);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transition: opacity 180ms ease;
+  pointer-events: none;
+}
+
+.journey-card.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.journey-card > * {
+  margin: 0;
+}
+
+.journey-card > * + * {
+  margin-top: 12px;
+}
+
+.journey-card-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.journey-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.journey-card-image {
+  display: block;
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.journey-card-meta {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.journey-card-kicker {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+.journey-card-snippet {
+  font-size: 0.8125rem;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.journey-card-time {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* The one place blue appears here — a genuine link (see "One blue"). */
+.journey-card-link {
+  display: inline-block;
+  font-size: 0.8125rem;
+  color: var(--link);
+  text-decoration: none;
+}
+
+.journey-card-link:hover,
+.journey-card-link:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  .focus-card-head { flex-wrap: wrap; }
+  .focus-card-actions { flex-wrap: wrap; }
+  .journey-remove-wide { display: none; }
+  .journey-remove-narrow { display: inline; }
+  /* No hover on touch: keep edit and remove reachable at rest, but quiet. */
+  .journey-trail-edit,
+  .journey-trail-remove { opacity: 0.7; }
+}
+
+@media (hover: none) {
+  .journey-trail-edit,
+  .journey-trail-remove { opacity: 0.7; }
+}
+
+:root[data-interface-motion="quiet"] .journey-panel { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .journey-panel { animation: none; }
+  .journey-card,
+  .journey-dot,
+  .journey-title { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .journey-dot { fill: CanvasText; }
+  .journey-path { stroke: CanvasText; opacity: 1; }
+  .journey-title { fill: CanvasText; }
+  .journey-card { border-color: CanvasText; }
+}

@@ -62,6 +62,10 @@ let inlineNotesEditor = null;
 const undoByThread = new Map();
 const navigationTrail = [];
 let utilitySurface = null;
+let journeyOpenTaskId = null; // task whose Web Journey accordion is open (transient)
+let journeyEditingTrailId = null; // trail label currently being renamed inline
+let journeyCardHideTimer = null;
+let loadedThreadStamp = null; // updatedAt of the open thread as last read or written
 
 let appSettings = defaultSettings();
 let noteLabelRegex = null;
@@ -92,6 +96,8 @@ const elements = {
   focusAttachments: document.getElementById("focusAttachments"),
   focusEditButton: document.getElementById("focusEditButton"),
   focusDoneButton: document.getElementById("focusDoneButton"),
+  focusJourneyButton: document.getElementById("focusJourneyButton"),
+  focusJourney: document.getElementById("focusJourney"),
   focusArchiveButton: document.getElementById("focusArchiveButton"),
   retrospectButton: document.getElementById("retrospectButton"),
   focusEditor: document.getElementById("focusEditor"),
@@ -265,6 +271,9 @@ function hydrate(thread) {
   editingImages = [];
   normalizeFocus();
   isDirty = false;
+  loadedThreadStamp = typeof thread.updatedAt === "string" ? thread.updatedAt : null;
+  if (!state.tasks.some((task) => task.id === journeyOpenTaskId)) journeyOpenTaskId = null;
+  journeyEditingTrailId = null;
 }
 
 function emptyStateObject() {
@@ -445,7 +454,50 @@ function normalizeTask(task, fallbackCreatedAt = null) {
             alt: typeof img.alt === "string" ? img.alt : "",
           }))
       : [],
+    deepLinks: normalizeDeepLinks(t.deepLinks),
   };
+}
+
+// Web Journey trails captured by the browser extension. Every field is
+// optional on the way in and predictable on the way out, so a hand-edited or
+// half-written trail still renders instead of breaking the focus card.
+function normalizeDeepLinks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const str = (value) => (typeof value === "string" ? value : "");
+  return raw
+    .filter((dl) => dl && typeof dl === "object" && Array.isArray(dl.nodes))
+    .map((dl) => {
+      const nodes = dl.nodes
+        .filter((n) => n && typeof n.url === "string")
+        .map((n) => ({
+          url: n.url,
+          title: str(n.title),
+          type: typeof n.type === "string" && n.type ? n.type : "link",
+          referrer: str(n.referrer),
+          snippet: str(n.snippet),
+          metaDescription: str(n.metaDescription),
+          ogTitle: str(n.ogTitle),
+          ogDescription: str(n.ogDescription),
+          ogImage: str(n.ogImage),
+          // A small thumbnail the extension inlines at capture time, so the
+          // hover card never has to fetch anything from the open web.
+          ogImageData:
+            typeof n.ogImageData === "string" && /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(n.ogImageData)
+              ? n.ogImageData
+              : "",
+          firstH1: str(n.firstH1),
+          visitedAt: str(n.visitedAt),
+        }));
+      const anchor = Number.isInteger(dl.anchorIndex) ? dl.anchorIndex : 0;
+      return {
+        id: typeof dl.id === "string" && dl.id ? dl.id : crypto.randomUUID(),
+        label: str(dl.label),
+        userNote: str(dl.userNote),
+        capturedAt: typeof dl.capturedAt === "string" ? dl.capturedAt : new Date().toISOString(),
+        anchorIndex: nodes.length ? clamp(anchor, 0, nodes.length - 1) : 0,
+        nodes,
+      };
+    });
 }
 
 // ---- Focus semantics over completed knots ---------------------------------
@@ -814,11 +866,15 @@ function bindEvents() {
 
   bindPlanDrag();
 
+  bindWebJourney();
+
   window.addEventListener("resize", renderVisuals);
   window.addEventListener("beforeunload", flushPersistOnUnload);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushPersistOnUnload();
+    else refreshFromDiskIfChanged();
   });
+  window.addEventListener("focus", refreshFromDiskIfChanged);
 }
 
 function handleAddTask(event) {
@@ -1314,6 +1370,7 @@ async function flushPersistImmediate() {
   try {
     const saved = await storage.saveThread(thread);
     isDirty = false;
+    if (saved && typeof saved.updatedAt === "string") loadedThreadStamp = saved.updatedAt;
     if (isOffline) {
       isOffline = false;
     }
@@ -1354,7 +1411,21 @@ function flushPersistOnUnload() {
       headers: { "content-type": "application/json" },
       body,
       keepalive: true,
-    }).catch(() => {});
+    })
+      .then(async (res) => {
+        // A tab that was only hidden (not closed) is still alive to hear back.
+        // If nothing changed since this body was sent, the file now matches
+        // the screen — mark it clean so a later return can pick up captures
+        // the browser extension writes meanwhile.
+        if (!res.ok) return;
+        const saved = await res.json();
+        const now = JSON.stringify({ name: state.threadName, state: serializeThreadState() });
+        if (now === body && !persistTimer) {
+          isDirty = false;
+          if (saved && typeof saved.updatedAt === "string") loadedThreadStamp = saved.updatedAt;
+        }
+      })
+      .catch(() => {});
   } catch {
     // ignore — the localStorage mirror above is the safety net.
   }
@@ -1736,6 +1807,7 @@ function renderLine() {
   const showTaskActions = !!currentTask && !editingHere;
   if (elements.focusEditButton) elements.focusEditButton.hidden = !showTaskActions;
   if (elements.focusDoneButton) elements.focusDoneButton.hidden = !showTaskActions;
+  renderWebJourneyEntry(currentTask, showTaskActions);
 
   if (editingHere) {
     // read view hidden; the editor carries the card
@@ -1802,6 +1874,528 @@ function renderLine() {
       `;
     })
     .join("");
+}
+
+// ---- Web Journey ------------------------------------------------------------
+//
+// Trails captured by the browser extension (see extension/ and engineering.md).
+// Invisible unless the focused task holds at least one trail; then a quiet
+// "✦ Web journey" text button opens an accordion of flowing threads, one per
+// trail, newest first. Nothing here moves for attention: the panel arrives,
+// the hover card fades, and that is all.
+
+const JOURNEY_NODE_GAP = 56; // vertical rhythm between visits
+const JOURNEY_TOP = 18; // room above the first dot (and below the last)
+const JOURNEY_BASE_X = 14; // left edge of the thread inside each svg
+const JOURNEY_LABEL_GAP = 20; // dot-to-title offset
+const JOURNEY_CARD_LINGER_MS = 160; // grace period to travel from dot to card
+const SEARCH_ENGINES = [
+  { host: /(^|\.)google\.[a-z.]+$/i, path: /^\/search/, name: "Google" },
+  { host: /(^|\.)bing\.com$/i, path: /^\/search/, name: "Bing" },
+  { host: /(^|\.)duckduckgo\.com$/i, path: /^\/($|\?)/, name: "DuckDuckGo" },
+  { host: /(^|\.)search\.brave\.com$/i, path: /^\/search/, name: "Brave" },
+  { host: /(^|\.)ecosia\.org$/i, path: /^\/search/, name: "Ecosia" },
+  { host: /(^|\.)kagi\.com$/i, path: /^\/search/, name: "Kagi" },
+];
+
+// "11:34 pm on 26th Jan 2024" — read at a glance, never parsed.
+function prettyTimestamp(isoString) {
+  const d = new Date(isoString);
+  if (!isoString || Number.isNaN(d.getTime())) return "";
+  const h = d.getHours();
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const day = d.getDate();
+  const teen = day % 100 >= 11 && day % 100 <= 13;
+  const suffix = teen ? "th" : { 1: "st", 2: "nd", 3: "rd" }[day % 10] || "th";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${h % 12 || 12}:${mm} ${h >= 12 ? "pm" : "am"} on ${day}${suffix} ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function journeyParseUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function journeySearchInfo(node) {
+  const url = journeyParseUrl(node.url);
+  if (!url) return null;
+  const engine = SEARCH_ENGINES.find((e) => e.host.test(url.hostname) && e.path.test(url.pathname + url.search));
+  const query = url.searchParams.get("q") || url.searchParams.get("query") || "";
+  if (engine && query) return { name: engine.name, query };
+  if (engine || node.type === "search") return { name: engine ? engine.name : "Search", query };
+  return null;
+}
+
+function journeyHost(value) {
+  const url = journeyParseUrl(value);
+  return url ? url.hostname.replace(/^www\./, "") : "";
+}
+
+// The words a person will recognise months later: the search they typed, or
+// the page's own title, falling back through its headline to its address.
+function journeyNodeTitle(node) {
+  const search = journeySearchInfo(node);
+  if (search && search.query) return `${search.name}: ${search.query}`;
+  return node.title || node.ogTitle || node.firstH1 || journeyHost(node.url) || node.url;
+}
+
+function journeyAutoLabel(trail) {
+  const anchor = trail.nodes[trail.anchorIndex] || trail.nodes[trail.nodes.length - 1];
+  return anchor ? truncate(journeyNodeTitle(anchor), 40) : "Web journey";
+}
+
+// Each trail gets its own small, stable sway so stacked trails read as
+// separate rivers rather than one repeated stamp.
+function journeySway(trail) {
+  let hash = 0;
+  for (const ch of trail.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return { amount: 12 + (hash % 9), startRight: hash % 2 === 1 };
+}
+
+function journeyPoints(trail) {
+  const { amount, startRight } = journeySway(trail);
+  return trail.nodes.map((_, index) => {
+    const right = (index % 2 === 1) !== startRight;
+    return { x: JOURNEY_BASE_X + (right ? amount : 0), y: JOURNEY_TOP + index * JOURNEY_NODE_GAP };
+  });
+}
+
+// One unbroken cubic Bézier through every visit. Tangents stay vertical at
+// each dot, so consecutive segments meet smoothly — no corners anywhere.
+function journeyPath(points) {
+  if (!points.length) return "";
+  const first = points[0];
+  if (points.length === 1) {
+    return `M ${first.x} ${first.y - 12} C ${first.x + 6} ${first.y - 4}, ${first.x - 6} ${first.y + 4}, ${first.x} ${first.y + 12}`;
+  }
+  let d = `M ${first.x} ${first.y}`;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const pull = (b.y - a.y) * 0.55;
+    d += ` C ${a.x} ${a.y + pull}, ${b.x} ${b.y - pull}, ${b.x} ${b.y}`;
+  }
+  return d;
+}
+
+function focusedOpenTask() {
+  const task = state.tasks[state.focusIndex];
+  return task && !task.done ? task : null;
+}
+
+function findFocusedTrail(trailId) {
+  const task = focusedOpenTask();
+  if (!task || !Array.isArray(task.deepLinks)) return { task, trail: null };
+  return { task, trail: task.deepLinks.find((entry) => entry.id === trailId) || null };
+}
+
+function renderWebJourneyEntry(currentTask, showTaskActions) {
+  const button = elements.focusJourneyButton;
+  const panel = elements.focusJourney;
+  const hasTrails = !!(showTaskActions && currentTask && currentTask.deepLinks && currentTask.deepLinks.length);
+  const open = hasTrails && journeyOpenTaskId === currentTask.id;
+  if (button) {
+    button.hidden = !hasTrails;
+    button.classList.toggle("is-active", open);
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (!panel) return;
+  if (!open) {
+    if (!panel.hidden) {
+      panel.hidden = true;
+      panel.innerHTML = "";
+      hideJourneyCard(true);
+    }
+    return;
+  }
+  const wasHidden = panel.hidden;
+  panel.hidden = false; // unhide first so the renderer can measure its width
+  if (!wasHidden && journeyEditingTrailId) return; // never yank an in-progress rename
+  renderWebJourney(currentTask);
+}
+
+function renderWebJourney(task) {
+  const panel = elements.focusJourney;
+  if (!panel || !task) return;
+  hideJourneyCard(true);
+  const trails = task.deepLinks
+    .slice()
+    .sort((a, b) => (Date.parse(b.capturedAt) || 0) - (Date.parse(a.capturedAt) || 0));
+  // Titles truncate to ~50 characters, fewer on narrow screens so a label
+  // never runs off the card.
+  const width = panel.clientWidth || 560;
+  const maxChars = clamp(Math.floor((width - JOURNEY_BASE_X - 20 - JOURNEY_LABEL_GAP - 16) / 7.4), 18, 50);
+  panel.innerHTML = trails.map((trail) => renderJourneyTrail(trail, maxChars)).join("");
+}
+
+function renderJourneyTrail(trail, maxChars) {
+  const label = trail.label || journeyAutoLabel(trail);
+  const editing = journeyEditingTrailId === trail.id;
+  const when = prettyTimestamp(trail.capturedAt);
+  const note = trail.userNote.trim();
+  const labelHtml = editing
+    ? `<input class="journey-trail-input" type="text" value="${escapeHtml(label)}" maxlength="120"
+         data-journey-label-input="${escapeHtml(trail.id)}" aria-label="Trail label" />`
+    : `<h4 class="journey-trail-label">${escapeHtml(label)}</h4>
+       <button class="journey-trail-edit" type="button" data-journey-rename="${escapeHtml(trail.id)}"
+         aria-label="Rename trail ${escapeHtml(label)}" title="Rename">✎</button>`;
+  return `
+    <section class="journey-trail" data-trail-id="${escapeHtml(trail.id)}" aria-label="Web journey: ${escapeHtml(label)}">
+      <header class="journey-trail-header">
+        ${labelHtml}
+        <button class="journey-trail-remove" type="button" data-journey-remove="${escapeHtml(trail.id)}"
+          aria-label="Remove this trail">
+          <span class="journey-remove-wide">Remove this trail</span><span class="journey-remove-narrow" aria-hidden="true">×</span>
+        </button>
+      </header>
+      ${when ? `<p class="journey-trail-time">captured ${escapeHtml(when)}</p>` : ""}
+      ${renderJourneySvg(trail, maxChars)}
+      ${note ? `<p class="journey-trail-note">“${escapeHtml(note)}”</p>` : ""}
+    </section>`;
+}
+
+function renderJourneySvg(trail, maxChars) {
+  const points = journeyPoints(trail);
+  if (!points.length) return "";
+  const height = JOURNEY_TOP * 2 + (points.length - 1) * JOURNEY_NODE_GAP;
+  // Titles share one left edge (just past the widest sway) — the thread
+  // carries the movement, the words stay still and easy to scan.
+  const labelX = Math.max(...points.map((p) => p.x)) + JOURNEY_LABEL_GAP;
+  const nodes = trail.nodes
+    .map((node, index) => {
+      const p = points[index];
+      const isAnchor = index === trail.anchorIndex;
+      const search = journeySearchInfo(node);
+      const title = journeyNodeTitle(node);
+      const shown = `${search ? "◎ " : ""}${truncate(title, maxChars)}`;
+      const when = prettyTimestamp(node.visitedAt);
+      const spoken = `${title}${when ? `, visited ${when}` : ""}${isAnchor ? ", where this trail was captured" : ""}. Press Enter to open the page.`;
+      return `
+        <g class="journey-node${isAnchor ? " is-anchor" : ""}${index === 0 ? " is-origin" : ""}"
+           data-trail-id="${escapeHtml(trail.id)}" data-node-index="${index}"
+           tabindex="0" role="link" aria-label="${escapeHtml(spoken)}">
+          <circle class="journey-hit" cx="${p.x}" cy="${p.y}" r="16"></circle>
+          <circle class="journey-dot" cx="${p.x}" cy="${p.y}" r="${isAnchor ? 8 : 6}"></circle>
+          <text class="journey-title" x="${labelX}" y="${p.y}" dominant-baseline="central">${escapeHtml(shown)}</text>
+        </g>`;
+    })
+    .join("");
+  return `
+    <svg class="journey-svg" height="${height}" role="group"
+         aria-label="Trail of ${trail.nodes.length} page${trail.nodes.length === 1 ? "" : "s"}">
+      <path class="journey-path" d="${journeyPath(points)}"></path>
+      ${nodes}
+    </svg>`;
+}
+
+// ---- The déjà vu card ---------------------------------------------------------
+
+function journeyCardElement() {
+  let card = document.getElementById("journeyCard");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "journeyCard";
+    card.className = "journey-card";
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", "Page details");
+    card.hidden = true;
+    card.addEventListener("pointerenter", () => clearTimeout(journeyCardHideTimer));
+    card.addEventListener("pointerleave", () => scheduleJourneyCardHide());
+    document.body.appendChild(card);
+  }
+  return card;
+}
+
+function journeyArrivedFrom(trail, index) {
+  const node = trail.nodes[index];
+  if (index > 0) return journeyNodeTitle(trail.nodes[index - 1]);
+  if (node.referrer) {
+    const search = journeySearchInfo({ url: node.referrer, type: "" });
+    return search && search.query ? `${search.name}: ${search.query}` : journeyHost(node.referrer);
+  }
+  return node.type === "typed" ? "an address typed by hand" : "";
+}
+
+function journeyCardContent(trail, index) {
+  const node = trail.nodes[index];
+  const parts = [];
+  parts.push(`<p class="journey-card-title">${escapeHtml(node.ogTitle || node.title || journeyNodeTitle(node))}</p>`);
+  const description = node.ogDescription || node.metaDescription;
+  if (description) parts.push(`<p class="journey-card-desc">${escapeHtml(description)}</p>`);
+  if (node.ogImageData) {
+    parts.push(`<img class="journey-card-image" src="${escapeHtml(node.ogImageData)}" alt="" />`);
+  }
+  const from = journeyArrivedFrom(trail, index);
+  if (from) {
+    parts.push(`<p class="journey-card-meta"><span class="journey-card-kicker">Arrived from</span>${escapeHtml(truncate(from, 80))}</p>`);
+  }
+  if (node.snippet.trim()) {
+    parts.push(`<p class="journey-card-snippet">“${escapeHtml(truncate(node.snippet, 280))}”</p>`);
+  }
+  const when = prettyTimestamp(node.visitedAt);
+  if (when) parts.push(`<p class="journey-card-time">${escapeHtml(when)}</p>`);
+  if (journeyParseUrl(node.url)) {
+    parts.push(
+      `<a class="journey-card-link" href="${escapeHtml(node.url)}" target="_blank" rel="noopener noreferrer">Open page ↗</a>`
+    );
+  }
+  return parts.join("");
+}
+
+function showJourneyCard(nodeEl) {
+  const { trail } = findFocusedTrail(nodeEl.dataset.trailId);
+  const index = Number(nodeEl.dataset.nodeIndex);
+  if (!trail || !trail.nodes[index]) return;
+  clearTimeout(journeyCardHideTimer);
+  const card = journeyCardElement();
+  const key = `${trail.id}:${index}`;
+  if (card.dataset.key !== key || card.hidden) {
+    card.dataset.key = key;
+    card.innerHTML = journeyCardContent(trail, index);
+    card.hidden = false;
+    card.classList.remove("is-visible");
+    positionJourneyCard(card, nodeEl);
+    // Next frame, so the fade starts from transparent rather than snapping in.
+    requestAnimationFrame(() => card.classList.add("is-visible"));
+    const img = card.querySelector("img");
+    if (img && !img.complete) img.addEventListener("load", () => positionJourneyCard(card, nodeEl), { once: true });
+  }
+}
+
+function positionJourneyCard(card, nodeEl) {
+  const gutter = 16;
+  const dot = (nodeEl.querySelector(".journey-dot") || nodeEl).getBoundingClientRect();
+  // Sit past the trail's widest title, so the card never hides a neighbour.
+  const svg = nodeEl.closest("svg");
+  const titles = svg ? [...svg.querySelectorAll(".journey-title")] : [];
+  const textRight = titles.length
+    ? Math.max(...titles.map((title) => title.getBoundingClientRect().right))
+    : nodeEl.getBoundingClientRect().right;
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  const vw = document.documentElement.clientWidth;
+  const vh = window.innerHeight;
+  // Prefer beside the titles; when there is no room, settle just under the dot.
+  let left = textRight + 24;
+  let top = dot.top + dot.height / 2 - 24;
+  if (left + width > vw - gutter) {
+    left = clamp(dot.left - 8, gutter, Math.max(gutter, vw - gutter - width));
+    top = dot.bottom + 12;
+    if (top + height > vh - gutter) top = dot.top - 12 - height;
+  }
+  card.style.left = `${Math.round(left)}px`;
+  card.style.top = `${Math.round(clamp(top, gutter, Math.max(gutter, vh - gutter - height)))}px`;
+}
+
+function scheduleJourneyCardHide() {
+  clearTimeout(journeyCardHideTimer);
+  journeyCardHideTimer = setTimeout(() => hideJourneyCard(false), JOURNEY_CARD_LINGER_MS);
+}
+
+function hideJourneyCard(immediate) {
+  clearTimeout(journeyCardHideTimer);
+  const card = document.getElementById("journeyCard");
+  if (!card || card.hidden) return;
+  card.classList.remove("is-visible");
+  const finish = () => {
+    if (card.classList.contains("is-visible")) return; // re-shown meanwhile
+    card.hidden = true;
+    card.dataset.key = "";
+  };
+  if (immediate || shouldReduceInterfaceMotion()) finish();
+  else journeyCardHideTimer = setTimeout(finish, 180);
+}
+
+// ---- Accordion, rename, remove ----------------------------------------------
+
+function toggleWebJourney() {
+  const task = focusedOpenTask();
+  if (!task || !task.deepLinks || !task.deepLinks.length) return;
+  journeyOpenTaskId = journeyOpenTaskId === task.id ? null : task.id;
+  journeyEditingTrailId = null;
+  renderLine();
+}
+
+function startJourneyRename(trailId) {
+  const { task, trail } = findFocusedTrail(trailId);
+  if (!trail) return;
+  journeyEditingTrailId = trailId;
+  renderWebJourney(task);
+  const input = elements.focusJourney.querySelector("[data-journey-label-input]");
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function finishJourneyRename(input, save) {
+  const trailId = input.dataset.journeyLabelInput;
+  if (journeyEditingTrailId !== trailId) return; // already settled (blur after Enter)
+  journeyEditingTrailId = null;
+  const { task, trail } = findFocusedTrail(trailId);
+  if (!task) return;
+  if (save && trail) {
+    const next = input.value.replace(/\s+/g, " ").trim() || journeyAutoLabel(trail);
+    if (next !== trail.label) {
+      rememberUndo("rename-trail");
+      trail.label = next;
+      task.updatedAt = new Date().toISOString();
+      markOuterMeaningful("rename-trail");
+    }
+  }
+  renderWebJourney(task);
+  const editButton = elements.focusJourney.querySelector(`[data-journey-rename="${CSS.escape(trailId)}"]`);
+  if (editButton) editButton.focus();
+}
+
+function removeJourneyTrail(trailId) {
+  const { task, trail } = findFocusedTrail(trailId);
+  if (!task || !trail) return;
+  rememberUndo("remove-trail");
+  task.deepLinks = task.deepLinks.filter((entry) => entry.id !== trailId);
+  task.updatedAt = new Date().toISOString();
+  if (!task.deepLinks.length) journeyOpenTaskId = null;
+  journeyEditingTrailId = null;
+  hideJourneyCard(true);
+  markOuterMeaningful("remove-trail");
+  renderLine();
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  setStatus(
+    appSettings.keyboardAssistedNavigation === false
+      ? "Trail removed"
+      : `Trail removed · ${isMac ? "⌘Z" : "Ctrl+Z"} brings it back`
+  );
+  const next = task.deepLinks.length
+    ? elements.focusJourney.querySelector(".journey-node")
+    : elements.focusEditButton;
+  if (next && typeof next.focus === "function") next.focus();
+}
+
+function openJourneyNode(nodeEl) {
+  const { trail } = findFocusedTrail(nodeEl.dataset.trailId);
+  const node = trail && trail.nodes[Number(nodeEl.dataset.nodeIndex)];
+  if (node && journeyParseUrl(node.url)) window.open(node.url, "_blank", "noopener,noreferrer");
+}
+
+function bindWebJourney() {
+  const panel = elements.focusJourney;
+  if (elements.focusJourneyButton) {
+    elements.focusJourneyButton.addEventListener("click", toggleWebJourney);
+  }
+  if (!panel) return;
+
+  panel.addEventListener("pointerover", (event) => {
+    if (event.pointerType === "touch") return; // touch uses tap, below
+    const node = event.target.closest(".journey-node");
+    if (node) showJourneyCard(node);
+  });
+  panel.addEventListener("pointerout", (event) => {
+    const node = event.target.closest(".journey-node");
+    if (!node || node.contains(event.relatedTarget)) return;
+    scheduleJourneyCardHide();
+  });
+  panel.addEventListener("focusin", (event) => {
+    const node = event.target.closest(".journey-node");
+    if (node) showJourneyCard(node);
+  });
+  panel.addEventListener("focusout", (event) => {
+    if (event.target.matches("[data-journey-label-input]")) {
+      finishJourneyRename(event.target, true);
+      return;
+    }
+    if (event.target.closest(".journey-node")) scheduleJourneyCardHide();
+  });
+
+  panel.addEventListener("click", (event) => {
+    const rename = event.target.closest("[data-journey-rename]");
+    if (rename) {
+      startJourneyRename(rename.dataset.journeyRename);
+      return;
+    }
+    const remove = event.target.closest("[data-journey-remove]");
+    if (remove) {
+      removeJourneyTrail(remove.dataset.journeyRemove);
+      return;
+    }
+    // A tap shows the card (touch has no hover); the card's link opens the page.
+    const node = event.target.closest(".journey-node");
+    if (node) showJourneyCard(node);
+  });
+
+  panel.addEventListener("keydown", (event) => {
+    const input = event.target.closest("[data-journey-label-input]");
+    if (input) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finishJourneyRename(input, true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finishJourneyRename(input, false);
+      }
+      return;
+    }
+    const node = event.target.closest(".journey-node");
+    if (!node) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openJourneyNode(node);
+    } else if (event.key === "Escape") {
+      hideJourneyCard(false);
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideJourneyCard(false);
+  });
+  window.addEventListener("scroll", () => hideJourneyCard(true), { passive: true, capture: true });
+  window.addEventListener("resize", () => {
+    hideJourneyCard(true);
+    const task = focusedOpenTask();
+    if (task && journeyOpenTaskId === task.id && !journeyEditingTrailId && !panel.hidden) {
+      renderWebJourney(task);
+    }
+  });
+}
+
+// ---- Picking up captures made in the browser --------------------------------
+//
+// The extension writes trails straight into the thread file while the Filum
+// tab sits in the background. When the tab comes back into view with nothing
+// unsaved, re-read the file once if it changed on disk, keeping the user's
+// place (step, focused task, open accordion). With unsaved edits, the local
+// copy wins — the next save is the user's own.
+let journeyRefreshInFlight = false;
+
+async function refreshFromDiskIfChanged() {
+  if (journeyRefreshInFlight || !state.threadId || threadMissing || isOffline) return;
+  if (isDirty || persistTimer || editingTaskId !== null || journeyEditingTrailId) return;
+  journeyRefreshInFlight = true;
+  try {
+    const thread = await storage.loadThread(state.threadId);
+    if (!thread || thread.id !== state.threadId || thread.updatedAt === loadedThreadStamp) return;
+    if (isDirty || persistTimer || editingTaskId !== null || journeyEditingTrailId) return;
+    const focusedId = state.tasks[state.focusIndex] ? state.tasks[state.focusIndex].id : null;
+    const step = state.currentStep;
+    const keepRetrospect = retrospectOn;
+    const keepJourney = journeyOpenTaskId;
+    hydrate(thread);
+    state.currentStep = step;
+    const index = focusedId ? state.tasks.findIndex((task) => task.id === focusedId) : -1;
+    if (index >= 0) state.focusIndex = index;
+    normalizeFocus();
+    retrospectOn = keepRetrospect;
+    if (state.tasks.some((task) => task.id === keepJourney)) journeyOpenTaskId = keepJourney;
+    render();
+  } catch {
+    // Offline or mid-move: stay quiet; the on-screen copy is still good.
+  } finally {
+    journeyRefreshInFlight = false;
+  }
 }
 
 // Shared geometry for the Step 3 thread. The curve loosens as knots complete:

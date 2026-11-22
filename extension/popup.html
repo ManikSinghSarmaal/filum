@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Filum — Web Journey</title>
+    <link rel="stylesheet" href="popup.css" />
+    <script type="module" src="popup.js"></script>
+  </head>
+  <body>
+    <main class="popup">
+      <header class="head">
+        <h1 class="brand"><span class="brand-mark" aria-hidden="true">✦</span> Filum</h1>
+        <p id="status" class="status" data-state="checking" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="statusText">Looking for Filum</span>
+        </p>
+      </header>
+
+      <section class="section trail" aria-labelledby="trailHeading">
+        <p id="trailHeading" class="label">Reading this tab</p>
+        <div class="trail-preview">
+          <svg id="trailThread" class="trail-thread" aria-hidden="true"></svg>
+          <ol id="trailList" class="trail-list"></ol>
+        </div>
+        <p id="following" class="following" hidden></p>
+      </section>
+
+      <form id="captureForm" class="section capture" novalidate>
+        <label class="field">
+          <span class="label">Thread</span>
+          <span class="select-wrap">
+            <select id="threadSelect" disabled>
+              <option>Loading threads</option>
+            </select>
+          </span>
+        </label>
+
+        <fieldset class="mode">
+          <legend class="visually-hidden">Where this trail goes</legend>
+          <label class="choice">
+            <input type="radio" name="mode" value="new" />
+            <span>Create new task</span>
+          </label>
+          <div class="choice-body" data-for="new" hidden>
+            <input id="newTaskTitle" type="text" maxlength="300" aria-label="New task title" />
+          </div>
+          <label class="choice">
+            <input type="radio" name="mode" value="existing" />
+            <span>Add to existing task</span>
+          </label>
+          <div class="choice-body" data-for="existing" hidden>
+            <span class="select-wrap">
+              <select id="taskSelect" aria-label="Existing task"></select>
+            </span>
+          </div>
+        </fieldset>
+
+        <textarea id="userNote" class="note" rows="3" maxlength="1000"
+                  placeholder="What caught your eye?"
+                  aria-label="What caught your eye? Optional."></textarea>
+
+        <button id="captureButton" class="capture-button" type="submit" disabled>✦ Capture to thread</button>
+        <p id="message" class="message" role="status" aria-live="polite"></p>
+      </form>
+
+      <footer class="foot">
+        <button id="serverToggle" class="server-toggle" type="button" aria-expanded="false" aria-controls="serverForm">
+          <svg class="gear" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.2"></circle>
+            <path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5"></path>
+          </svg>
+          <span>Server: <span id="serverLabel">localhost:4317</span></span>
+        </button>
+        <form id="serverForm" class="server-form" hidden>
+          <input id="serverInput" type="text" spellcheck="false" autocomplete="off"
+                 aria-label="Filum server address" placeholder="localhost:4317" />
+          <button class="server-save" type="submit">Save</button>
+        </form>
+        <p id="serverHint" class="server-hint" hidden>Only addresses on this computer, such as localhost:4317.</p>
+      </footer>
+    </main>
+  </body>
+</html>

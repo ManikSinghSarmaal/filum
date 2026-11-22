@@ -195,6 +195,8 @@
             <div class="focus-card-head">
               <p class="focus-label">Do this now</p>
               <span class="focus-card-actions">
+                <button id="focusJourneyButton" class="ghost-button mini-edit journey-toggle" type="button"
+                        aria-expanded="false" aria-controls="focusJourney" hidden>✦ Web journey</button>
                 <button id="focusDoneButton" class="ghost-button mini-edit" type="button" hidden>Mark done</button>
                 <button id="focusEditButton" class="ghost-button mini-edit" type="button" hidden>Edit</button>
               </span>
@@ -202,6 +204,7 @@
             <h3 id="focusTitle">Nothing yet</h3>
             <div id="focusNotes" class="focus-notes"></div>
             <div id="focusAttachments" class="attachment-tray attachment-tray--read"></div>
+            <div id="focusJourney" class="journey-panel" aria-label="Web journey trails" hidden></div>
             <button id="focusArchiveButton" class="ghost-button" type="button" hidden>Archive this thread</button>
             <div id="focusEditor" class="focus-editor" hidden></div>
           </div>

@@ -139,6 +139,48 @@ mkdir -p ~/Documents/filum-threads
 FILUM_THREADS_DIR=~/Documents/filum-threads node server.js
 ```
 
+## Chrome Extension — Web Journey
+
+Web Journey remembers how you found things. While researching, open the
+Filum extension on any page: it shows the trail that led you there (a search,
+the pages in between, the page in front of you), and pins it to a task in one
+of your threads. From then on, pages you open in that tab are added to the
+same trail until you close the tab. Later, in **Follow the thread**, a quiet
+**✦ Web journey** button on the task opens the trail as a flowing thread;
+hover any point to see the page's own description, how you arrived, and
+anything you had highlighted. The extension does nothing until you open it,
+shows no badges, and only ever talks to Filum on your own computer.
+
+### Load it
+
+1. Start Filum (`node server.js`).
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Click **Load unpacked** and choose the `extension/` folder in this repo.
+4. Pin **Filum — Web Journey** from the puzzle-piece menu if you like.
+
+Chrome will mention reading browsing history: the extension uses it only to
+rebuild a trail when you open the popup.
+
+### Use it
+
+1. On any page, click the Filum icon. The dot beside **Connected** is dark
+   when Filum is reachable.
+2. Check the trail preview, pick a **Thread**, then **Create new task** (the
+   title is pre-filled from the page) or **Add to existing task**.
+3. Optionally answer **What caught your eye?** Highlighted text on the page
+   is saved automatically.
+4. Press **✦ Capture to thread**. A line like
+   `✦ web journey — 3 steps from Google: …` is added to the task's notes.
+
+Trails can be renamed (hover the label, click ✎) or removed (**Remove this
+trail**; undo brings it back).
+
+### Server address
+
+The popup uses `localhost:4317`. If you run Filum on another port, click
+**Server** at the bottom of the popup and enter, for example,
+`localhost:8080`. Only addresses on this computer are accepted.
+
 ## Custom port
 
 The default port is `4317`.

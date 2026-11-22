@@ -1321,8 +1321,39 @@ function streamFile(res, filePath) {
   fssync.createReadStream(filePath).pipe(res);
 }
 
+// ---- CORS (Web Journey extension) -------------------------------------------
+//
+// The Web Journey browser extension talks to this server from its own origin
+// (chrome-extension://<id>). Only extension origins are echoed back: a blanket
+// "*" would let any website the user happens to visit read and rewrite their
+// threads through localhost, which is exactly the outward reach design.md
+// rules out. Same-origin requests from the Filum tab send no Origin header for
+// GETs and need no CORS headers at all.
+const EXTENSION_ORIGIN = /^(chrome-extension|moz-extension|safari-web-extension):\/\/[a-z0-9-]+$/i;
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || !EXTENSION_ORIGIN.test(origin)) return false;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const corsAllowed = applyCors(req, res);
+  if (req.method === "OPTIONS") {
+    if (corsAllowed) {
+      res.writeHead(204, {
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "86400",
+      });
+    } else {
+      res.writeHead(204, { "Vary": "Origin" });
+    }
+    return res.end();
+  }
   try {
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
