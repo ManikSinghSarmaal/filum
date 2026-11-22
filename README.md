@@ -52,6 +52,13 @@ what you typed.
 Images attached to a task open in place when clicked. In a task's notes, type
 `@` to reference one of that task's images alongside your threads.
 
+## Following the thread
+
+In **Retrospect**, click any completed task to read it — notes, images and
+all — without bringing it back; "Return to thread" is there if you want it
+again. A YouTube link in a task's notes shows a small preview that plays in
+place only when you click it.
+
 ## A quick look
 
 ![Filum — Step 1: gather your tasks while a thread quietly tangles alongside them](assets/images/demo.png)

@@ -27,9 +27,10 @@
           <div id="threadMenu" class="thread-menu-pop" role="listbox" aria-label="Saved threads" hidden></div>
         </div>
         <button id="saveThreadButton" class="ghost-button thread-button" type="button">Rename</button>
-        <button id="newThreadButton" class="ghost-button thread-button" type="button">Start new thread</button>
+        <button id="newThreadButton" class="ghost-button thread-button" type="button">New thread</button>
         <button id="navigationBackButton" class="ghost-button thread-button navigation-back" type="button"
                 aria-label="Go back to the previous Filum state" hidden>← Back</button>
+        <span id="threadStatus" class="thread-status" aria-live="polite"></span>
         <div class="prefs-menu">
           <button id="prefsButton" class="ghost-button thread-button" type="button"
                   aria-haspopup="true" aria-expanded="false" aria-controls="prefsPanel">Preferences</button>
@@ -52,28 +53,25 @@
           </button>
           <span id="circOpenDescription" class="visually-hidden">Enter your private reflective writing space</span>
         </div>
-        <span id="threadStatus" class="thread-status" aria-live="polite"></span>
       </div>
 
-      <header class="hero">
-        <div>
-          <p class="eyebrow brand-mark">Filum</p>
-          <h1>From a tangle of tasks to one calm thread.</h1>
-          <p class="intro">
-            Filum is named after the Latin word for thread. Ideas should remain simple: collect what is swirling on your mind,
-            shape it gently, then move through it one thing at a time.
-          </p>
-        </div>
-        <div class="hero-note">
-          <p>Writing-first capture</p>
-          <p>Local-first storage</p>
-        </div>
+      <header class="masthead">
+        <h1 class="brand-mark">Filum</h1>
+        <p class="tagline">From a tangle of tasks to one calm thread.</p>
       </header>
 
-      <nav class="stepper" aria-label="Progress">
-        <button class="step is-active" data-step-target="capture">Gather</button>
-        <button class="step" data-step-target="plan">Order</button>
-        <button class="step" data-step-target="line">Follow The Thread</button>
+      <!-- The three steps as knots on one thread: filled behind you, ringed
+           where you are, open ahead. -->
+      <nav class="stepper" aria-label="Steps">
+        <button class="step is-active" type="button" data-step-target="capture" aria-current="step">
+          <span class="step-knot" aria-hidden="true"></span><span class="step-label">Gather</span>
+        </button>
+        <button class="step" type="button" data-step-target="plan">
+          <span class="step-knot" aria-hidden="true"></span><span class="step-label">Order</span>
+        </button>
+        <button class="step" type="button" data-step-target="line" aria-label="Follow the thread">
+          <span class="step-knot" aria-hidden="true"></span><span class="step-label">Follow</span>
+        </button>
       </nav>
 
       <main>
@@ -86,11 +84,12 @@
 
         <section class="panel is-active" data-step="capture">
           <div class="panel-header">
-            <div>
+            <div class="panel-header-start"></div>
+            <div class="panel-title">
               <p class="section-label">Step 1</p>
               <h2>Gather your tasks</h2>
             </div>
-            <button id="resetButton" class="ghost-button" type="button">Reset</button>
+            <div class="panel-header-end"></div>
           </div>
 
           <form id="taskForm" class="task-form">
@@ -120,14 +119,13 @@
             <div class="attach-row">
               <button id="captureAddImageButton" class="ghost-button attach-button" type="button">Add image</button>
               <input id="captureImageInput" class="visually-hidden" type="file" accept="image/*" multiple />
-              <small class="field-hint">Everything stays in files on your own disk.</small>
             </div>
             <div id="captureAttachments" class="attachment-tray" aria-live="polite"></div>
 
             <div class="form-actions">
               <button class="primary-button" type="submit">Add task</button>
               <button id="finishAggregationButton" class="secondary-button" type="button">
-                Complete aggregation
+                Continue to order
               </button>
             </div>
           </form>
@@ -140,8 +138,9 @@
               </svg>
             </div>
             <div class="capture-meta">
-              <p>Current capture</p>
               <strong id="taskCount">0 tasks</strong>
+              <button id="resetButton" class="text-button" type="button"
+                      aria-label="Clear every task in this thread">Clear all</button>
             </div>
             <div id="taskPreviewList" class="task-preview-list" aria-live="polite"></div>
           </aside>
@@ -149,14 +148,16 @@
 
         <section class="panel" data-step="plan">
           <div class="panel-header">
-            <div>
-              <p class="section-label">Step 2</p>
-              <h2>Choose the order</h2>
-            </div>
-            <div class="panel-header-actions">
+            <div class="panel-header-start">
               <button id="findPlanButton" class="ghost-button icon-button" type="button" hidden aria-label="Search threads">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>
               </button>
+            </div>
+            <div class="panel-title">
+              <p class="section-label">Step 2</p>
+              <h2>Choose the order</h2>
+            </div>
+            <div class="panel-header-end">
               <button id="toLineButton" class="primary-button" type="button">Untangle it</button>
             </div>
           </div>
@@ -172,17 +173,19 @@
 
         <section class="panel" data-step="line">
           <div class="panel-header">
-            <div>
-              <p id="lineStepLabel" class="section-label">Step 1</p>
-              <h2>The clear thread</h2>
-            </div>
-            <div class="focus-nav">
+            <div class="panel-header-start">
               <button id="findLineButton" class="ghost-button icon-button" type="button" hidden aria-label="Search threads">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg>
               </button>
-              <button id="retrospectButton" class="ghost-button" type="button" hidden aria-pressed="false">Retrospect</button>
               <button id="focusPrevButton" class="ghost-button" type="button">Previous task</button>
+            </div>
+            <div class="panel-title">
+              <p id="lineStepLabel" class="section-label">Step 1</p>
+              <h2>The clear thread</h2>
+            </div>
+            <div class="panel-header-end">
               <button id="focusNextButton" class="secondary-button" type="button">Next task</button>
+              <button id="retrospectButton" class="ghost-button" type="button" hidden aria-pressed="false">Retrospect</button>
             </div>
           </div>
 
@@ -193,8 +196,9 @@
 
           <div class="focus-card">
             <div class="focus-card-head">
-              <p class="focus-label">Do this now</p>
+              <p id="focusLabel" class="focus-label">Do this now</p>
               <span class="focus-card-actions">
+                <button id="focusRestoreButton" class="ghost-button mini-edit" type="button" hidden>Return to thread</button>
                 <button id="focusJourneyButton" class="ghost-button mini-edit journey-toggle" type="button"
                         aria-expanded="false" aria-controls="focusJourney" hidden>✦ Web journey</button>
                 <button id="focusDoneButton" class="ghost-button mini-edit" type="button" hidden>Mark done</button>
@@ -210,6 +214,11 @@
           </div>
         </section>
       </main>
+
+      <footer class="colophon">
+        <span class="colophon-rule" aria-hidden="true"></span>
+        <p>Everything stays in files on your own disk.</p>
+      </footer>
 
       <section id="searchPage" class="utility-page" aria-labelledby="searchPageTitle" hidden>
         <header class="utility-page-header">

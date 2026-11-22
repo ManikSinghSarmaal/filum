@@ -62,6 +62,7 @@ let inlineNotesEditor = null;
 const undoByThread = new Map();
 const navigationTrail = [];
 let utilitySurface = null;
+let retrospectPreviewId = null; // a completed knot being read in the retrospect view
 let journeyOpenTaskId = null; // task whose Web Journey accordion is open (transient)
 let journeyEditingTrailId = null; // trail label currently being renamed inline
 let journeyCardHideTimer = null;
@@ -97,6 +98,9 @@ const elements = {
   focusEditButton: document.getElementById("focusEditButton"),
   focusDoneButton: document.getElementById("focusDoneButton"),
   focusJourneyButton: document.getElementById("focusJourneyButton"),
+  focusLabel: document.getElementById("focusLabel"),
+  focusCard: document.querySelector(".focus-card"),
+  focusRestoreButton: document.getElementById("focusRestoreButton"),
   focusJourney: document.getElementById("focusJourney"),
   focusArchiveButton: document.getElementById("focusArchiveButton"),
   retrospectButton: document.getElementById("retrospectButton"),
@@ -536,7 +540,15 @@ function normalizeFocus() {
 function setFocusByTaskId(taskId) {
   const index = state.tasks.findIndex((task) => task.id === taskId);
   if (index < 0 || state.tasks[index].done) return;
-  if (index === state.focusIndex) return;
+  const wasPreviewing = Boolean(retrospectPreviewId);
+  retrospectPreviewId = null; // choosing an open knot ends any reading of a done one
+  if (index === state.focusIndex) {
+    if (wasPreviewing) {
+      renderLine();
+      renderLineThread();
+    }
+    return;
+  }
   state.focusIndex = index;
   markOuterMeaningful("focus-task");
   renderLine();
@@ -584,6 +596,11 @@ function restoreTask(taskId) {
   task.done = false;
   task.completedAt = null;
   task.updatedAt = new Date().toISOString();
+  // Returning the knot being read makes it the one to do now.
+  if (retrospectPreviewId === taskId) {
+    state.focusIndex = state.tasks.indexOf(task);
+    retrospectPreviewId = null;
+  }
   normalizeFocus();
   markOuterMeaningful("restore-task");
   render();
@@ -657,6 +674,7 @@ function handleAssistedShortcut(event) {
 
 function toggleRetrospect() {
   retrospectOn = !retrospectOn;
+  retrospectPreviewId = null;
   untangleToken += 1; // cancel any in-flight svg animation
   render();
   if (retrospectOn) playRetrospect();
@@ -697,6 +715,11 @@ function bindEvents() {
   if (elements.focusDoneButton) {
     elements.focusDoneButton.addEventListener("click", completeFocusedTask);
   }
+  if (elements.focusRestoreButton) {
+    elements.focusRestoreButton.addEventListener("click", () => {
+      if (retrospectPreviewId) restoreTask(retrospectPreviewId);
+    });
+  }
   if (elements.retrospectButton) {
     elements.retrospectButton.addEventListener("click", toggleRetrospect);
   }
@@ -728,15 +751,17 @@ function bindEvents() {
         return;
       }
       const item = event.target.closest(".linear-item[data-task-id]");
-      if (!item || item.classList.contains("is-done")) return;
-      setFocusByTaskId(item.dataset.taskId);
+      if (!item) return;
+      if (item.classList.contains("is-done")) previewDoneTask(item.dataset.taskId);
+      else setFocusByTaskId(item.dataset.taskId);
     });
     elements.linearList.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       const item = event.target.closest(".linear-item[data-task-id]");
-      if (!item || item.classList.contains("is-done")) return;
+      if (!item || event.target.closest("[data-restore-task]")) return;
       event.preventDefault();
-      setFocusByTaskId(item.dataset.taskId);
+      if (item.classList.contains("is-done")) previewDoneTask(item.dataset.taskId);
+      else setFocusByTaskId(item.dataset.taskId);
     });
   }
 
@@ -744,7 +769,10 @@ function bindEvents() {
     // The dots on the thread are jump points, same as the rail cards.
     elements.lineSvg.addEventListener("click", (event) => {
       const dot = event.target.closest("[data-task-id]");
-      if (dot) setFocusByTaskId(dot.dataset.taskId);
+      if (!dot) return;
+      const task = state.tasks.find((entry) => entry.id === dot.dataset.taskId);
+      if (task?.done) previewDoneTask(task.id);
+      else setFocusByTaskId(dot.dataset.taskId);
     });
   }
 
@@ -791,6 +819,12 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !target.isConnected) return;
+    const play = target.closest("[data-yt-play]");
+    if (play && !target.closest("[contenteditable='true']")) {
+      event.preventDefault();
+      playYoutube(play);
+      return;
+    }
     const imageButton = target.closest("[data-view-image], [data-image-ref]");
     if (imageButton && !target.closest("[contenteditable='true']")) {
       event.preventDefault();
@@ -1515,9 +1549,17 @@ function render() {
 function renderStepState() {
   const activeStep = state.currentStep || DEFAULT_STEP;
 
+  // Knots behind the current step are filled, the current one is ringed:
+  // progress is carried by the shape of the thread, not by a counter.
+  const activeIndex = steps.indexOf(activeStep);
   elements.stepButtons.forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.stepTarget === activeStep);
+    const index = steps.indexOf(button.dataset.stepTarget);
+    button.classList.toggle("is-active", index === activeIndex);
+    button.classList.toggle("is-done", index < activeIndex);
+    if (index === activeIndex) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
   });
+  document.querySelector(".stepper")?.style.setProperty("--step-progress", String(Math.max(0, activeIndex) / (steps.length - 1)));
 
   elements.panels.forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.step === activeStep);
@@ -1791,10 +1833,22 @@ function renderLine() {
   const doneCount = all.length - visible.length;
   const allDone = all.length > 0 && visible.length === 0;
   const focused = all[state.focusIndex];
-  const currentTask = focused && !focused.done ? focused : null;
-  const editingHere = !!(currentTask && editingTaskId === currentTask.id && state.currentStep === "line");
+  const preview = retrospectPreviewTask();
+  if (!preview) retrospectPreviewId = null;
+  const currentTask = preview || (focused && !focused.done ? focused : null);
+  const editingHere = !!(!preview && currentTask && editingTaskId === currentTask.id && state.currentStep === "line");
+  if (elements.focusLabel) {
+    elements.focusLabel.textContent = preview
+      ? `Done${preview.completedAt ? ` · ${formatTime(preview.completedAt)}` : ""}`
+      : "Do this now";
+  }
+  elements.focusCard?.classList.toggle("is-preview", Boolean(preview));
+  if (elements.focusRestoreButton) elements.focusRestoreButton.hidden = !preview;
   if (elements.lineStepLabel) {
-    elements.lineStepLabel.textContent = currentTask ? `Step ${state.focusIndex + 1}` : "Sequence";
+    // Count the way the rail and the thread count: completed knots only
+    // take a number while retrospect shows them.
+    const index = currentTask ? (retrospectOn ? all : visible).indexOf(currentTask) : -1;
+    elements.lineStepLabel.textContent = index >= 0 ? `Step ${index + 1}` : "Sequence";
   }
 
   // The editor renders in place of the read-only "Do this now" content.
@@ -1816,8 +1870,8 @@ function renderLine() {
   }
 
   const showTaskActions = !!currentTask && !editingHere;
-  if (elements.focusEditButton) elements.focusEditButton.hidden = !showTaskActions;
-  if (elements.focusDoneButton) elements.focusDoneButton.hidden = !showTaskActions;
+  if (elements.focusEditButton) elements.focusEditButton.hidden = !showTaskActions || Boolean(preview);
+  if (elements.focusDoneButton) elements.focusDoneButton.hidden = !showTaskActions || Boolean(preview);
   renderWebJourneyEntry(currentTask, showTaskActions);
 
   if (editingHere) {
@@ -1826,7 +1880,7 @@ function renderLine() {
     elements.focusTitle.textContent = "This thread is empty";
     elements.focusNotes.innerHTML =
       '<span class="focus-notes-empty">Gather a few thoughts in Step 1 first.</span>';
-  } else if (allDone) {
+  } else if (allDone && !preview) {
     elements.focusTitle.textContent = "The thread is clear.";
     elements.focusNotes.innerHTML =
       '<span class="focus-notes-empty">Every knot on this thread is loose.</span>';
@@ -1838,7 +1892,8 @@ function renderLine() {
   }
   renderReadonlyTray(elements.focusAttachments, currentTask && !editingHere ? currentTask.images : []);
 
-  const visiblePos = currentTask ? visible.findIndex((task) => task.id === currentTask.id) : -1;
+  const navTask = focused && !focused.done ? focused : null;
+  const visiblePos = navTask ? visible.findIndex((task) => task.id === navTask.id) : -1;
   if (elements.focusPrevButton) {
     elements.focusPrevButton.disabled = visiblePos <= 0;
   }
@@ -1862,8 +1917,11 @@ function renderLine() {
     .map((task, index) => {
       if (task.done) {
         const when = task.completedAt ? ` · ${formatTime(task.completedAt)}` : "";
+        const isPreview = preview && preview.id === task.id;
         return `
-          <article class="linear-item is-done" data-task-id="${task.id}">
+          <article class="linear-item is-done ${isPreview ? "is-previewing" : ""}" data-task-id="${task.id}"
+            role="button" tabindex="0" aria-pressed="${isPreview ? "true" : "false"}"
+            aria-label="Read ${escapeHtml(task.title)}, done">
             <div class="linear-item-index">Step ${index + 1}</div>
             <strong>${expandHtml(task.title)}</strong>
             <p>done${escapeHtml(when)}</p>
@@ -1871,7 +1929,7 @@ function renderLine() {
           </article>
         `;
       }
-      const isCurrent = currentTask && task.id === currentTask.id;
+      const isCurrent = !preview && currentTask && task.id === currentTask.id;
       return `
         <article class="linear-item ${isCurrent ? "is-current" : "is-muted"}"
           data-task-id="${task.id}"
@@ -1993,9 +2051,29 @@ function journeyPath(points) {
   return d;
 }
 
+// The task the focus card is about: a completed knot being read in the
+// retrospect view, or else the focused open task.
 function focusedOpenTask() {
+  const preview = retrospectPreviewTask();
+  if (preview) return preview;
   const task = state.tasks[state.focusIndex];
   return task && !task.done ? task : null;
+}
+
+function retrospectPreviewTask() {
+  if (!retrospectOn || !retrospectPreviewId) return null;
+  return state.tasks.find((task) => task.id === retrospectPreviewId && task.done) || null;
+}
+
+// Reading a completed knot never un-completes it: the focus card shows its
+// contents, marked as done, with "Return to thread" as the only action.
+function previewDoneTask(taskId) {
+  const task = state.tasks.find((entry) => entry.id === taskId);
+  if (!task || !task.done || !retrospectOn) return;
+  retrospectPreviewId = retrospectPreviewId === taskId ? null : taskId;
+  editingTaskId = null;
+  renderLine();
+  renderLineThread();
 }
 
 function findFocusedTrail(trailId) {
@@ -2433,7 +2511,8 @@ function lineThreadPath(layout) {
 
 function lineThreadDot(task, x, midY, isCurrent) {
   if (task.done) {
-    return `<circle data-task-id="${task.id}" cx="${x}" cy="${midY}" r="6" fill="none" stroke="rgba(22,22,22,0.55)" stroke-width="2" />`;
+    const reading = retrospectPreviewId === task.id;
+    return `<circle data-task-id="${task.id}" class="line-dot" cx="${x}" cy="${midY}" r="${reading ? 9 : 6}" fill="rgba(255,252,246,0.9)" stroke="rgba(22,22,22,${reading ? 0.85 : 0.55})" stroke-width="${reading ? 2.5 : 2}" />`;
   }
   return `<circle data-task-id="${task.id}" class="line-dot" cx="${x}" cy="${midY}" r="${isCurrent ? 10 : 7}" fill="#111111" />`;
 }
@@ -2614,8 +2693,23 @@ function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+// Notes as one plain line for summaries: markup and link syntax read as
+// noise at a glance, so a chip shows what the words say, not how they are
+// written. Abbreviations expand here too.
+function plainNotes(notes) {
+  return expandPlain(
+    String(notes || "")
+      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]+\)/gi, "@$1")
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)\s]+\)/gi, "$1")
+      .replace(/^```.*$/gm, "")
+      .replace(/^\s*(?:[-*]|\d+\.)\s+/gm, "")
+      .replace(/\*\*|__|`/g, "")
+      .replace(/(^|[^*])\*(?!\s)([^*\n]+)\*/g, "$1$2")
+  );
+}
+
 function summarizeTask(task) {
-  return task.notes ? truncate(expandPlain(task.notes), 140) : "No notes yet";
+  return task.notes ? truncate(plainNotes(task.notes), 140) : "No notes yet";
 }
 
 function clamp(value, min, max) {
@@ -2724,7 +2818,87 @@ function inlineMarkup(raw) {
   return out.replace(/\x00(\d+)\x00/g, (m, i) => tokens[Number(i)]);
 }
 
+// ---- YouTube previews ---------------------------------------------------------
+//
+// A YouTube link alone on its line becomes a small card in place; links
+// inside a sentence stay links, with compact cards gathered after the notes.
+// Thumbnails load lazily without a referrer; nothing plays until clicked, and
+// then from youtube-nocookie.com. (design.md drift log, 2026-11-22.)
+const YOUTUBE_LINK = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?[^\s)]*?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})[^\s)]*/i;
+const MAX_VIDEO_PREVIEWS = 3;
+
+function youtubeInfo(url) {
+  const match = String(url || "").match(YOUTUBE_LINK);
+  if (!match) return null;
+  const time = String(url).match(/[?&#](?:t|start)=(\d+h)?(\d+m)?(\d+)s?/i);
+  const start = time
+    ? (Number.parseInt(time[1], 10) || 0) * 3600 + (Number.parseInt(time[2], 10) || 0) * 60 + (Number.parseInt(time[3], 10) || 0)
+    : 0;
+  return { id: match[1], start };
+}
+
+// The line is only a YouTube link (bare, or [label](url)).
+function standaloneYoutube(line) {
+  const trimmed = String(line || "").trim();
+  const labelled = trimmed.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+  const url = labelled ? labelled[2] : /^\S+$/.test(trimmed) ? trimmed : "";
+  const info = url ? youtubeInfo(url) : null;
+  if (!info || (!labelled && !YOUTUBE_LINK.test(trimmed))) return null;
+  return { ...info, label: labelled ? labelled[1] : "" };
+}
+
+function youtubeCardHtml(video, compact = false) {
+  const label = video.label || "YouTube video";
+  const watch = `https://www.youtube.com/watch?v=${video.id}${video.start ? `&t=${video.start}s` : ""}`;
+  return `<span class="yt-card${compact ? " yt-card--compact" : ""}" data-yt="${escapeHtml(video.id)}">`
+    + `<button class="yt-thumb" type="button" data-yt-play="${escapeHtml(video.id)}" data-yt-start="${video.start || 0}"`
+    + ` aria-label="Play video: ${escapeHtml(label)}">`
+    + `<img src="https://i.ytimg.com/vi/${escapeHtml(video.id)}/mqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+    + `<span class="yt-play" aria-hidden="true"></span></button>`
+    + `<span class="yt-meta"><span class="yt-title">${expandHtml(label)}</span>`
+    + `<a class="rich-link yt-open" href="${escapeHtml(watch)}" target="_blank" rel="noopener noreferrer">Open on YouTube ↗</a></span>`
+    + `</span>`;
+}
+
+// Inline YouTube links that did not get a card of their own.
+function inlineYoutubeVideos(notes, alreadyShown) {
+  const videos = [];
+  const seen = new Set(alreadyShown);
+  for (const line of String(notes || "").split("\n")) {
+    if (standaloneYoutube(line)) continue;
+    const pattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(?:https?:\/\/|www\.)[^\s<)]+/gi;
+    let match;
+    while ((match = pattern.exec(line))) {
+      const info = youtubeInfo(match[2] || match[0]);
+      if (!info || seen.has(info.id)) continue;
+      seen.add(info.id);
+      videos.push({ ...info, label: match[1] || "" });
+    }
+  }
+  return videos;
+}
+
+function playYoutube(button) {
+  const id = button.dataset.ytPlay;
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id || "")) return;
+  const start = Number.parseInt(button.dataset.ytStart, 10) || 0;
+  const frame = document.createElement("iframe");
+  frame.className = "yt-frame";
+  frame.src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0${start ? `&start=${start}` : ""}`;
+  frame.title = button.getAttribute("aria-label") || "YouTube video";
+  frame.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+  frame.referrerPolicy = "strict-origin-when-cross-origin";
+  frame.allowFullscreen = true;
+  button.closest(".yt-card")?.classList.add("is-playing");
+  button.replaceWith(frame);
+}
+
 function renderNoteLine(line) {
+  const video = standaloneYoutube(line);
+  if (video) {
+    renderNoteLine.shown?.add(video.id);
+    return youtubeCardHtml(video);
+  }
   const html = inlineMarkup(line);
   return noteLabelRegex && noteLabelRegex.test(line)
     ? `<span class="note-line">${html}</span>`
@@ -2736,15 +2910,21 @@ function renderNoteLine(line) {
 // written there; only the inline pass is the read view's own.
 function renderRichNotes(notes) {
   const raw = String(notes == null ? "" : notes).replace(/\r\n/g, "\n");
-  if (window.FilumRichText?.markdownToHtml) {
-    return window.FilumRichText.markdownToHtml(raw, {
-      inline: renderNoteLine,
-      listClass: "note-list",
-      preClass: "note-code",
-      paragraphClass: "note-paragraph",
-    });
-  }
-  return raw.split("\n").map(renderNoteLine).join("<br />");
+  renderNoteLine.shown = new Set();
+  const body = window.FilumRichText?.markdownToHtml
+    ? window.FilumRichText.markdownToHtml(raw, {
+        inline: renderNoteLine,
+        listClass: "note-list",
+        preClass: "note-code",
+        paragraphClass: "note-paragraph",
+      })
+    : raw.split("\n").map(renderNoteLine).join("<br />");
+  const room = Math.max(0, MAX_VIDEO_PREVIEWS - renderNoteLine.shown.size);
+  const extra = room ? inlineYoutubeVideos(raw, renderNoteLine.shown).slice(0, room) : [];
+  renderNoteLine.shown = null;
+  return extra.length
+    ? `${body}<div class="yt-strip">${extra.map((video) => youtubeCardHtml(video, true)).join("")}</div>`
+    : body;
 }
 
 function renderThumbStrip(images) {
@@ -2811,7 +2991,7 @@ function renderReadonlyTray(container, images) {
 
 // Step 3 card subtitle: the start of the notes, or a quiet placeholder.
 function lineCardSubtitle(task) {
-  if (task.notes && task.notes.trim()) return truncate(expandPlain(task.notes), 70);
+  if (task.notes && task.notes.trim()) return truncate(plainNotes(task.notes), 70);
   return "No details yet";
 }
 

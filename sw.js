@@ -1,4 +1,4 @@
-const CACHE_NAME = "filum-static-v16";
+const CACHE_NAME = "filum-static-v18";
 const ASSETS = [
   "./",
   "./index.html",
