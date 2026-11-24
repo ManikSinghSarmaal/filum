@@ -275,12 +275,29 @@
           <button id="circNextLeaf" class="circ-text-control circ-arrow-control" type="button"
                   aria-label="Next leaf">→</button>
         </nav>
+        <!-- Delete on the left, export on the right, set apart from the leaf
+             arrows; turning the leaf sits on the centre line. -->
         <div class="circ-writing-controls">
-          <button id="circExport" class="circ-text-control circ-export-control" type="button"
-                  aria-label="Export leaves of this diary as a PDF">Export PDF</button>
-          <button id="circDeleteLeaf" class="circ-text-control" type="button">Delete leaf</button>
-          <button id="circRevise" class="circ-text-control" type="button" hidden>Revise</button>
-          <button id="circTurnLeaf" class="circ-text-control" type="button">Turn the leaf</button>
+          <span class="circ-control-start">
+            <button id="circDeleteLeaf" class="circ-text-control circ-icon-control circ-delete-control" type="button"
+                    aria-label="Delete this leaf" title="Delete leaf">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"></path>
+              </svg>
+            </button>
+          </span>
+          <span class="circ-control-centre">
+            <button id="circRevise" class="circ-text-control" type="button" hidden>Revise</button>
+            <button id="circTurnLeaf" class="circ-text-control" type="button">Turn the leaf</button>
+          </span>
+          <span class="circ-control-end">
+            <button id="circExport" class="circ-text-control circ-icon-control circ-export-control" type="button"
+                    aria-label="Export leaves of this diary as a PDF" title="Export PDF">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4v11m0 0-4-4m4 4 4-4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"></path>
+              </svg>
+            </button>
+          </span>
         </div>
         <div id="circDeleteLeafConfirm" class="circ-delete-confirm" hidden>
           <span>Delete this leaf?</span>
@@ -313,6 +330,7 @@
 
     <script src="rich-editor.js"></script>
     <script src="app.js"></script>
+    <script src="circumspection-leaves.js"></script>
     <script src="circumspection-export.js"></script>
     <script src="circumspection.js"></script>
   </body>

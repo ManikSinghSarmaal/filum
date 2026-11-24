@@ -53,7 +53,7 @@
     dialog.querySelector("[data-export-this]").hidden = current === null;
     dialog.querySelector("[data-export-this]").dataset.leaf = String(current || 1);
     dialog.querySelector(".circ-export-meta").textContent = [
-      longDate(options.entry.createdAt),
+      firstLine(options.entry.content, 48) || longDate(options.entry.createdAt),
       `${total} ${total === 1 ? "leaf" : "leaves"}`,
       `${words(pages.map((page) => page.text).join(" ")).toLocaleString()} words`,
     ].join(" · ");
@@ -258,12 +258,16 @@
     ];
     if (entry.revision?.lastRevisedAt) details.push(`revised ${dateTime(entry.revision.lastRevisedAt)}`);
     const thread = entry.origin?.threadNameSnapshot;
+    // The diary's first line is its title; an entry that opens blank is
+    // known by the day it was begun.
+    const date = longDate(entry.createdAt);
+    const heading = firstLine(entry.content, 120) || date;
     const wordTotal = words(selected.map((page) => page.text).join(" "));
     return `<section class="sheet cover">
       <div class="cover-centre">
         <p class="cover-kicker">Circumspection</p>
-        <h1 class="cover-title">${escapeHtml(longDate(entry.createdAt))}</h1>
-        <p class="cover-range">${escapeHtml(rangeText)}</p>
+        <h1 class="cover-title${heading.length > 36 ? " is-long" : ""}">${escapeHtml(heading)}</h1>
+        <p class="cover-range">${escapeHtml(heading === date ? rangeText : `${date} · ${rangeText}`)}</p>
         <span class="cover-thread" aria-hidden="true"></span>
         <p class="cover-detail">${escapeHtml(details.join(" · "))}</p>
         ${thread ? `<p class="cover-detail">From the thread “${escapeHtml(thread)}”</p>` : ""}
@@ -336,7 +340,11 @@ body { color: var(--ink); font-family: ${WRITING_FONT}; }
 .cover-kicker {
   margin: 0; color: var(--muted); font-size: 3mm; letter-spacing: 0.32em; text-transform: uppercase;
 }
-.cover-title { margin: 2mm 0 0; font-family: ${LABEL_FONT}; font-size: 12mm; font-weight: 400; line-height: 1.1; }
+.cover-title {
+  max-width: 82%; margin: 2mm 0 0; font-family: ${LABEL_FONT}; font-size: 12mm; font-weight: 400; line-height: 1.15;
+  text-wrap: balance;
+}
+.cover-title.is-long { font-size: 8.5mm; }
 .cover-range { margin: 0; color: var(--muted); font-family: ${LABEL_FONT}; font-size: 5mm; font-style: italic; }
 .cover-thread {
   display: block; width: 36mm; height: 6mm; margin: 5mm 0 4mm;
@@ -435,10 +443,42 @@ body { color: var(--ink); font-family: ${WRITING_FONT}; }
     win.print();
   }
 
+  // Chrome suggests this as the file name, so it reads like one: the
+  // diary's first line (or the day it was begun), then the leaves if only
+  // some were chosen — "Provelis v-s Metaview - a contrastive analysis —
+  // leaves 2–3". Characters Finder or other systems refuse are replaced.
   function documentTitle(from, to, total) {
-    const date = longDate(request.entry.createdAt);
+    const name = fileSafe(firstLine(request.entry.content, 80)) || `Circumspection — ${longDate(request.entry.createdAt)}`;
     const leaves = from === 1 && to === total ? "" : from === to ? ` — leaf ${from}` : ` — leaves ${from}–${to}`;
-    return `Circumspection — ${date}${leaves}`;
+    return `${name}${leaves}`;
+  }
+
+  // The first written line as plain words: marks, links, references, list
+  // markers and quote/heading signs removed; cut at a word, with an ellipsis.
+  function firstLine(content, max) {
+    const line = String(content || "").split("\n").map((text) => text.trim()).find(Boolean) || "";
+    const plain = line
+      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]{8,64}\)/gi, "@$1")
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
+      .replace(/\*\*|__|`/g, "")
+      .replace(/(^|[^*])\*(?!\*)([^*]+?)\*/g, "$1$2")
+      .replace(/^(?:[-*>#]+|\d+\.)\s+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (plain.length <= max) return plain;
+    const cut = plain.slice(0, max - 1);
+    const space = cut.lastIndexOf(" ");
+    return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:.–—-]+$/u, "")}…`;
+  }
+
+  function fileSafe(text) {
+    return text
+      .replace(/\s*[:|]\s*/g, " - ")
+      .replace(/[\/\\]/g, "-")
+      .replace(/[*?"<>\u0000-\u001f]/g, "")
+      .replace(/^\.+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   // ---- Small helpers ------------------------------------------------------------

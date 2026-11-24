@@ -31,6 +31,10 @@ levels below the main point). A written leaf opens without a blinking caret —
 click where you want to write, or just start typing to continue where you
 left off. The → arrow on a written last leaf opens a fresh one.
 
+A leaf holds 20 lines at a 17px default writing size; the wider musky diary
+is about a third wider again. Below the arrows, the bin icon (left) deletes a
+leaf after a confirmation and the tray icon (right) exports to PDF.
+
 The Catalogue is a wide typographic list: opening an entry reads and edits in
 one place, while its bin control moves it to a recoverable local bin. Filum
 keeps at most one blank entry and creates the next leaf only when writing
@@ -44,16 +48,18 @@ path.
 
 ### Exporting a diary to PDF
 
-**Export PDF** (below a leaf) or the arrow-into-tray icon beside a Catalogue
-entry opens the export sheet. Choose the leaves to keep — *from leaf i to leaf
-j*, **All**, or **This leaf** — whether to begin with a title leaf (the date
-the diary was begun, the range, when it was last written, its origin thread
+The export icon (below the → arrow on a leaf) or the same icon beside a
+Catalogue entry opens the export sheet. Choose the leaves to keep — *from leaf i to leaf
+j*, **All**, or **This leaf** — whether to begin with a title leaf (the
+diary's first line as its title, the date it was begun, the range, when it was last written, its origin thread
 and word count), and the paper: **Leaf shape** (the diary's own proportions),
 **A4** or **US Letter**. The preview is the document itself, scaled down.
 
 **Save as PDF…** opens the browser's print sheet: choose **Save as PDF**, then
-a folder in Finder. The file is named after the diary (for example
-`Circumspection — November 21, 2026 — leaves 3–7`). Leaves keep their
+a folder in Finder. The suggested file name is the diary's first line (for
+example `Provelis v-s Metaview - a contrastive analysis — leaves 3–7`;
+characters Finder refuses are replaced), or the date it was begun if the
+diary opens blank. Leaves keep their
 numbering and line breaks from the writing view, the type is embedded, text
 stays selectable, links stay clickable, and abbreviations read in full.
 

@@ -147,9 +147,9 @@ test("Circumspection persistence API", async (t) => {
           revisionMarker: "subtle",
           outwardPolicy: "fast-settle",
           liveInkOpacity: 0.7,
-          writingSizePx: 19,
+          writingSizePx: 17,
           writingMeasureCh: 74,
-          writingMeasureVersion: 2,
+          writingMeasureVersion: 3,
           diaryLayout: "simple-musky",
         },
         activeEntryId: null,
@@ -188,7 +188,7 @@ test("Circumspection persistence API", async (t) => {
       assert.equal(result.status, 200);
       assert.equal(result.body.settings.inkEffect, "none");
       assert.equal(result.body.settings.liveInkOpacity, 0.7);
-      assert.equal(result.body.settings.writingSizePx, 19);
+      assert.equal(result.body.settings.writingSizePx, 17);
       assert.equal(result.body.settings.writingMeasureCh, 74);
       assert.equal(result.body.settings.writingMeasureVersion, 1);
       assert.equal(result.body.settings.diaryLayout, "simple-musky");

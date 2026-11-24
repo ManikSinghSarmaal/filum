@@ -16,6 +16,11 @@
      The shade is user-configurable; app.js overrides this at runtime. */
   --note-label: #6f5f80;
   --code-bg: rgba(22, 22, 22, 0.05);
+  /* A muted brick — only on hover/focus of a control that deletes, so the
+     hand learns "this one removes" before it clicks. See the "A brick hue,
+     for deletion only" entry in design.md's drift log. */
+  --danger: #9a4b3e;
+  --danger-wash: rgba(154, 75, 62, 0.1);
   --shadow: 0 24px 60px rgba(18, 18, 18, 0.08);
   --radius-xl: 28px;
   --radius-lg: 20px;
@@ -2209,17 +2214,17 @@ body.is-circumspecting > .app-shell {
 .circ-writing-view {
   min-height: 100vh;
   min-height: 100dvh;
-  padding: clamp(82px, 13vh, 132px) 24px calc(42px + env(safe-area-inset-bottom));
+  padding: clamp(76px, 10vh, 132px) 24px calc(42px + env(safe-area-inset-bottom));
 }
 
 .circ-field {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  width: min(var(--circ-measure, 74ch), calc(100vw - 48px));
+  width: min(var(--circ-measure, 82ch), calc(100vw - 48px));
   margin: 0 auto;
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
-  font-size: var(--circ-writing-size, 19px);
+  font-size: var(--circ-writing-size, 17px);
 }
 
 .circ-field::before {
@@ -2240,7 +2245,7 @@ body.is-circumspecting > .app-shell {
 
 .circ-mode-label {
   min-height: 20px;
-  margin: 0 0 28px;
+  margin: 0 0 20px;
   color: var(--muted);
   font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   font-size: 0.9rem;
@@ -2254,10 +2259,12 @@ body.is-circumspecting > .app-shell {
   grid-column: 1;
   grid-row: 3;
   width: 100%;
-  min-height: clamp(380px, 58dvh, 720px);
+  /* A leaf is a fixed shape: its line budget plus one line of air, so the
+     arrows below never move between leaves (circumspection-leaves.js). */
+  min-height: calc((var(--circ-leaf-lines, 20) + 1) * 1.72em);
   margin: 0;
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
-  font-size: var(--circ-writing-size, 19px);
+  font-size: var(--circ-writing-size, 17px);
   font-weight: 400;
   line-height: 1.72;
   letter-spacing: 0;
@@ -2272,7 +2279,7 @@ body.is-circumspecting > .app-shell {
   justify-self: end;
   justify-content: flex-end;
   width: fit-content;
-  margin: -10px clamp(14px, 3vw, 28px) 24px 0;
+  margin: -12px clamp(14px, 3vw, 28px) 14px 0;
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -2381,6 +2388,9 @@ body.is-circumspecting > .app-shell {
 .circ-input.rich-surface ol {
   margin: 0.45em 0 0.9em;
 }
+
+/* Whatever ends a leaf leaves no extra air below it. */
+.circ-input.rich-surface > :last-child { margin-bottom: 0; }
 
 .circ-input {
   color: transparent;
@@ -2701,8 +2711,8 @@ button.circ-entry-main:focus-visible {
   .circ-projection,
   .circ-input,
   .circ-revision-input {
-    min-height: max(390px, 57dvh);
-    font-size: 17px;
+    min-height: calc((var(--circ-leaf-lines, 20) + 1) * 1.7em);
+    font-size: 16px;
     line-height: 1.7;
   }
   .circ-leaf-navigation,
@@ -3835,8 +3845,54 @@ button.attachment-link:focus-visible {
 /* One centred axis: heading, the sheets themselves, the range, one ink
    action. The preview is the export document, scaled — never a mock-up. */
 
-.circ-writing-controls .circ-export-control { margin-right: auto; }
-.circ-writing-controls .circ-export-control[hidden] { display: none; }
+.circ-writing-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  /* Set apart from the leaf arrows above, so a turn never lands on a delete. */
+  margin-top: 26px;
+  /* Same type size as the arrow row, so the same 68ch puts the delete
+     icon under ← and the export icon under →. */
+  font-size: 0.8rem;
+}
+
+.circ-control-start { justify-self: start; }
+.circ-control-centre { justify-self: center; display: inline-flex; gap: 8px; }
+.circ-control-end { justify-self: end; }
+
+.circ-icon-control {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.circ-icon-control svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.circ-icon-control[hidden] { display: none; }
+
+.circ-delete-control:not(:disabled):hover,
+.circ-delete-control:not(:disabled):focus-visible {
+  color: var(--danger);
+  background: var(--danger-wash);
+}
+
+/* The confirmation appears beside the control that asked for it. */
+.circ-delete-confirm { justify-content: flex-start; }
+.circ-delete-confirm .circ-settle-control:hover,
+.circ-delete-confirm .circ-settle-control:focus-visible {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-wash);
+}
 
 .circ-export {
   width: min(860px, calc(100vw - 32px));

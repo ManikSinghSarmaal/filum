@@ -669,9 +669,9 @@ function defaultCircumspectionStore() {
       revisionMarker: "subtle",
       outwardPolicy: "fast-settle",
       liveInkOpacity: 0.7,
-      writingSizePx: 19,
+      writingSizePx: 17,
       writingMeasureCh: 74,
-      writingMeasureVersion: 2,
+      writingMeasureVersion: 3,
       diaryLayout: "simple-musky",
     },
     activeEntryId: null,
@@ -740,12 +740,12 @@ function validateCircumspectionSettings(raw) {
     revisionMarker: settings.revisionMarker,
     outwardPolicy: settings.outwardPolicy,
     liveInkOpacity: requireNumber(settings.liveInkOpacity, 0.35, 1, "settings.liveInkOpacity"),
-    writingSizePx: requireNumber(settings.writingSizePx, 16, 24, "settings.writingSizePx"),
+    writingSizePx: requireNumber(settings.writingSizePx, 15, 24, "settings.writingSizePx"),
     writingMeasureCh: requireNumber(settings.writingMeasureCh, 48, 96, "settings.writingMeasureCh"),
     writingMeasureVersion:
       raw.writingMeasureVersion === undefined
         ? 1
-        : requireInteger(settings.writingMeasureVersion, 1, 2, "settings.writingMeasureVersion"),
+        : requireInteger(settings.writingMeasureVersion, 1, 3, "settings.writingMeasureVersion"),
     diaryLayout,
   };
 }
