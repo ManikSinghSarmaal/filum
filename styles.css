@@ -3830,3 +3830,154 @@ button.attachment-link:focus-visible {
     min-width: 0;
   }
 }
+
+/* ---- Circumspection → PDF ---------------------------------------------- */
+/* One centred axis: heading, the sheets themselves, the range, one ink
+   action. The preview is the export document, scaled — never a mock-up. */
+
+.circ-writing-controls .circ-export-control { margin-right: auto; }
+.circ-writing-controls .circ-export-control[hidden] { display: none; }
+
+.circ-export {
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--ink);
+  background: linear-gradient(180deg, #fbf8f2 0%, var(--bg) 100%);
+  box-shadow: var(--shadow);
+}
+
+.circ-export::backdrop {
+  background: rgba(245, 241, 232, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.circ-export[open] { animation: circ-export-arrive 220ms ease both; }
+
+@keyframes circ-export-arrive {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.circ-export-form {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  padding: 26px clamp(16px, 4vw, 32px) 20px;
+  text-align: center;
+}
+
+.circ-export-header h2 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-size: 1.6rem;
+  font-weight: 400;
+}
+
+.circ-export-meta,
+.circ-export-summary,
+.circ-export-hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.circ-export-summary { margin: 0; font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif; font-style: italic; }
+.circ-export-hint { margin: 0; font-size: 0.76rem; }
+.circ-export-hint strong { color: var(--ink); font-weight: 600; }
+
+.circ-export-preview {
+  width: 100%;
+  max-height: min(46dvh, 420px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(231, 223, 208, 0.32);
+}
+
+.circ-export-sizer {
+  position: relative;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.circ-export-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  background: transparent;
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+.circ-export-range,
+.circ-export-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.circ-export-range label,
+.circ-export-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.circ-export-range input[type="number"] {
+  width: 4.4em;
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--bg-soft);
+  text-align: center;
+}
+
+.circ-export-options select {
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--bg-soft);
+}
+
+.circ-export-check input { accent-color: var(--ink); width: 16px; height: 16px; }
+
+.circ-export-dash { color: var(--muted); }
+
+.circ-export-quick { display: inline-flex; gap: 2px; }
+.circ-export-quick .circ-text-control { min-height: 36px; padding: 6px 10px; }
+.circ-export-quick [hidden] { display: none; }
+
+.circ-export-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  width: min(360px, 100%);
+}
+
+.circ-export-actions > :first-child { justify-self: end; }
+.circ-export-actions > :last-child { justify-self: start; }
+
+@media (max-width: 600px) {
+  .circ-export-preview { max-height: 34dvh; }
+  .circ-export-range { gap: 6px 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .circ-export[open] { animation: none; }
+}

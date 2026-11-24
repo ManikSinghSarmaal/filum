@@ -348,6 +348,7 @@ function installCircumspectionBridge() {
     updateContext: updateCircumspectionContext,
     flushThread: flushPersistImmediate,
     captureOuterSnapshot,
+    expandAbbreviationsHtml: expandHtml,
   };
 }
 

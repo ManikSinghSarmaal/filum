@@ -42,6 +42,21 @@ no delayed reveal, blur, or post-text animation. Circumspection is
 desktop/web-first; responsive mobile layouts remain available as a secondary
 path.
 
+### Exporting a diary to PDF
+
+**Export PDF** (below a leaf) or the arrow-into-tray icon beside a Catalogue
+entry opens the export sheet. Choose the leaves to keep — *from leaf i to leaf
+j*, **All**, or **This leaf** — whether to begin with a title leaf (the date
+the diary was begun, the range, when it was last written, its origin thread
+and word count), and the paper: **Leaf shape** (the diary's own proportions),
+**A4** or **US Letter**. The preview is the document itself, scaled down.
+
+**Save as PDF…** opens the browser's print sheet: choose **Save as PDF**, then
+a folder in Finder. The file is named after the diary (for example
+`Circumspection — November 21, 2026 — leaves 3–7`). Leaves keep their
+numbering and line breaks from the writing view, the type is embedded, text
+stays selectable, links stay clickable, and abbreviations read in full.
+
 ## Abbreviations and images
 
 Under **Preferences → Abbreviations**, add your own short forms (for example

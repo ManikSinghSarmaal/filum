@@ -38,7 +38,7 @@
     "circTurnLeaf", "circDeleteLeaf", "circDeleteLeafConfirm", "circCancelDeleteLeaf",
     "circConfirmDeleteLeaf", "circRevisionActions", "circDiscardRevision", "circSettleRevision",
     "circCatalogueView", "circCatalogueHeading", "circNewEntry", "circReturnLiving", "circBinButton",
-    "circCatalogueList", "circLive",
+    "circCatalogueList", "circLive", "circExport",
   ];
   const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
   if (ids.some((id) => !el[id])) return;
@@ -116,6 +116,7 @@
     el.circPrevLeaf.addEventListener("click", () => moveLeaf(-1));
     el.circNextLeaf.addEventListener("click", () => moveLeaf(1));
     el.circTurnLeaf.addEventListener("click", turnLeaf);
+    el.circExport.addEventListener("click", () => openExport(activeEntry()?.id, el.circExport));
     el.circDeleteLeaf.addEventListener("click", requestLeafDeletion);
     el.circCancelDeleteLeaf.addEventListener("click", hideDeleteConfirmation);
     el.circConfirmDeleteLeaf.addEventListener("click", deleteCurrentLeaf);
@@ -1132,6 +1133,7 @@
     el.circDeleteLeaf.hidden = mode === "revision";
     el.circDeleteLeaf.disabled = page.start === page.end;
     el.circTurnLeaf.hidden = mode !== "writing" || !living || !entry.content.trim();
+    el.circExport.hidden = mode === "revision" || !entry.content.trim();
     el.circInput.readOnly = mode === "revision" || (!directInk && (mode !== "writing" || !living));
     el.circInput.setAttribute("aria-readonly", el.circInput.readOnly ? "true" : "false");
     if (reading) el.circLive.textContent = `Reading leaf ${currentPageIndex + 1} of ${pages.length}`;
@@ -1302,6 +1304,8 @@
 
   function handleGlobalKeydown(event) {
     if (el.circRoot.hidden) return;
+    // The export dialog owns its own keys; Escape closes it, not Circumspection.
+    if (window.FilumCircumspectionExport?.isOpen()) return;
     if (event.key === "Escape") {
       if (!el.circDeleteLeafConfirm.hidden) {
         event.preventDefault();
@@ -1657,7 +1661,13 @@
           ${
             catalogueScope === "binned"
               ? `<button class="circ-text-control" type="button" data-circ-restore="${entry.id}">Restore</button>`
-              : `<button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
+              : `<button class="circ-bin-control" type="button" data-circ-export="${entry.id}"
+                   aria-label="Export this note as a PDF" title="Export as PDF">
+                   <svg viewBox="0 0 24 24" aria-hidden="true">
+                     <path d="M12 4v11m0 0-4-4m4 4 4-4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"></path>
+                   </svg>
+                 </button>
+                 <button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
                    aria-label="Move this note to the Circumspection bin" title="Move to bin">
                    <svg viewBox="0 0 24 24" aria-hidden="true">
                      <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"></path>
@@ -1673,9 +1683,36 @@
     const read = event.target.closest("[data-circ-read]");
     const bin = event.target.closest("[data-circ-bin]");
     const restore = event.target.closest("[data-circ-restore]");
+    const exporting = event.target.closest("[data-circ-export]");
+    if (exporting) openExport(exporting.dataset.circExport, exporting);
     if (read) openEntry(read.dataset.circRead, "reading", "catalogue-item");
     if (bin) moveCatalogueEntry(bin.dataset.circBin, "binned");
     if (restore) moveCatalogueEntry(restore.dataset.circRestore, "active");
+  }
+
+  // ---- Export ------------------------------------------------------------------
+  //
+  // The leaves handed over are the leaves the writer sees — same geometry,
+  // same numbering — so "leaf 3 to leaf 7" in the dialog is exactly that.
+  function openExport(entryId, returnFocus) {
+    const exporter = window.FilumCircumspectionExport;
+    const entry = store.entries.find((item) => item.id === entryId);
+    if (!exporter || !entry || !entry.content.trim()) return;
+    persistNow();
+    const layout = store.settings.diaryLayout;
+    const showing = currentView === "writing" && activeEntry()?.id === entry.id;
+    exporter.open({
+      entry: clone(entry),
+      pages: pagesFor(entry).map((page) => ({ text: page.text })),
+      layout,
+      measureCh: layout === "wider-musky" ? 88 : 74,
+      lines: leafGeometry().lines,
+      currentLeaf: showing ? currentPageIndex : null,
+      expandHtml: bridge?.expandAbbreviationsHtml,
+      onClose: () => { if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true }); },
+    });
+    // Only that an export was opened — never which leaves or what they say.
+    recordAudit("DIARY_EXPORT_OPENED");
   }
 
   function moveCatalogueEntry(entryId, status) {
@@ -1858,7 +1895,18 @@
     return String(value);
   }
 
-  function excerptFor(content) { return content.replace(/\s+/gu, " ").trim().slice(0, 120); }
+  // Excerpts read as words, not markup: "**light**" shows as "light".
+  function excerptFor(content) {
+    return content
+      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]{8,64}\)/gi, "@$1")
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
+      .replace(/\*\*|__|`/g, "")
+      .replace(/(^|[^*])\*(?!\*)([^*\n]+?)\*/g, "$1$2")
+      .replace(/^\s*(?:[-*]|\d+\.)\s+/gm, "")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 120);
+  }
   function wordCount(content) { return (content.trim().match(/\S+/gu) || []).length; }
   function formatDate(value) { return new Date(value).toLocaleString([], { dateStyle: "long", timeStyle: "short" }); }
   function clone(value) { return JSON.parse(JSON.stringify(value)); }

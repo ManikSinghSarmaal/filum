@@ -196,6 +196,16 @@ test("Circumspection persistence API", async (t) => {
       assert.equal(result.body.audit[1].sourceState, "LIVING_PAGE");
     });
 
+    await t.test("PUT accepts the diary export audit event (an unknown event would reject the save)", async () => {
+      await resetStore();
+      const store = await defaultStore();
+      store.audit = [{ ...makeAuditEvent(1), event: "DIARY_EXPORT_OPENED", mode: "reading",
+        sourceState: null, destinationState: null }];
+      const result = await request(baseUrl, "/api/circumspection", jsonRequest("PUT", store));
+      assert.equal(result.status, 200);
+      assert.equal(result.body.audit[0].event, "DIARY_EXPORT_OPENED");
+    });
+
     await t.test("PUT round-trips canonical content that is still visually pending", async () => {
       await resetStore();
       const store = await defaultStore();
