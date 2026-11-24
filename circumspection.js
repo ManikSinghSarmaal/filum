@@ -21,9 +21,9 @@
       revisionMarker: "subtle",
       outwardPolicy: "fast-settle",
       liveInkOpacity: 0.7,
-      writingSizePx: 19,
+      writingSizePx: 17,
       writingMeasureCh: 74,
-      writingMeasureVersion: 2,
+      writingMeasureVersion: 3,
       diaryLayout: "simple-musky",
     },
     activeEntryId: null,
@@ -38,10 +38,10 @@
     "circTurnLeaf", "circDeleteLeaf", "circDeleteLeafConfirm", "circCancelDeleteLeaf",
     "circConfirmDeleteLeaf", "circRevisionActions", "circDiscardRevision", "circSettleRevision",
     "circCatalogueView", "circCatalogueHeading", "circNewEntry", "circReturnLiving", "circBinButton",
-    "circCatalogueList", "circLive",
+    "circCatalogueList", "circLive", "circExport",
   ];
   const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
-  if (ids.some((id) => !el[id])) return;
+  if (ids.some((id) => !el[id]) || !window.FilumLeaves) return;
 
   const bridge = window.FilumCircumspectionBridge;
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
@@ -116,6 +116,7 @@
     el.circPrevLeaf.addEventListener("click", () => moveLeaf(-1));
     el.circNextLeaf.addEventListener("click", () => moveLeaf(1));
     el.circTurnLeaf.addEventListener("click", turnLeaf);
+    el.circExport.addEventListener("click", () => openExport(activeEntry()?.id, el.circExport));
     el.circDeleteLeaf.addEventListener("click", requestLeafDeletion);
     el.circCancelDeleteLeaf.addEventListener("click", hideDeleteConfirmation);
     el.circConfirmDeleteLeaf.addEventListener("click", deleteCurrentLeaf);
@@ -206,18 +207,15 @@
     return true;
   }
 
-  function migrateWritingMeasure() {
-    if (store.settings.writingMeasureVersion >= 2) return false;
-    if (store.settings.writingMeasureCh === 62) store.settings.writingMeasureCh = 74;
-    store.settings.writingMeasureVersion = 2;
-    return true;
-  }
+  // Version 3 (2026-11-24): smaller default type, roomier leaves.
+  function migrateWritingMeasure() { return window.FilumLeaves.migrateSettings(store.settings); }
 
   function applyCircAppearance() {
-    const writingMeasure = store.settings.diaryLayout === "wider-musky" ? 88 : 74;
+    const geometry = window.FilumLeaves.geometryFor(store.settings.diaryLayout);
+    el.circRoot.style.setProperty("--circ-leaf-lines", String(geometry.lines));
     el.circRoot.style.setProperty("--circ-live-opacity", String(store.settings.liveInkOpacity));
     el.circRoot.style.setProperty("--circ-writing-size", `${store.settings.writingSizePx}px`);
-    el.circRoot.style.setProperty("--circ-measure", `${writingMeasure}ch`);
+    el.circRoot.style.setProperty("--circ-measure", `${geometry.measureCh}ch`);
     el.circRoot.dataset.motion = store.settings.pageMotion;
     el.circRoot.dataset.inkEffect = store.settings.inkEffect;
   }
@@ -256,9 +254,11 @@
         revisionMarker: "subtle",
         outwardPolicy: "fast-settle",
         liveInkOpacity: boundedNumber(settings.liveInkOpacity, 0.35, 1, 0.7),
-        writingSizePx: boundedNumber(settings.writingSizePx, 16, 24, 19),
+        writingSizePx: boundedNumber(settings.writingSizePx, 15, 24, 17),
         writingMeasureCh: boundedNumber(settings.writingMeasureCh, 48, 96, 74),
-        writingMeasureVersion: boundedInteger(settings.writingMeasureVersion, 1, 2, 1),
+        // Read from the stored settings, not the defaults: a store with no
+        // version is an old one and must still be migrated.
+        writingMeasureVersion: boundedInteger(raw.settings.writingMeasureVersion, 1, 3, 1),
         diaryLayout: ["simple-musky", "wider-musky"].includes(raw.settings.diaryLayout)
           ? raw.settings.diaryLayout
           : boundedNumber(raw.settings.writingMeasureCh, 48, 96, 74) >= 84
@@ -870,170 +870,21 @@
 
   // ---- Leaves ----------------------------------------------------------------
   //
-  // A leaf holds a fixed number of lines of a fixed number of characters for
-  // each diary type, independent of window size, zoom, or writing size. The
-  // same words therefore always land on the same leaf, and the boundary a
-  // leaf was rendered with is the boundary it is written back into.
-  //
-  // Lines are counted the way they look: a short line ("Theory of self")
-  // still takes a whole line, long lines wrap word by word, paragraphs leave
-  // a half-line of air. A leaf breaks between words — never inside **bold**,
-  // a link, or a list item — and text flows back when earlier text shrinks,
-  // because pages are always derived from the whole entry.
-  const LEAF_GEOMETRY = {
-    "simple-musky": { charsPerLine: 80, lines: 18 },
-    "wider-musky": { charsPerLine: 96, lines: 18 },
-  };
-  const PARAGRAPH_GAP_LINES = 0.5;
-  const UNBREAKABLE = /@\[[^\]]+\]\(filum:[a-z]+\/[a-z0-9-]+\)|\[[^\]]+\]\([^)]+\)|\*\*.+?\*\*|__.+?__|\*[^*\n]+?\*|`[^`\n]+`/g;
+  // How an entry is cut into leaves lives in circumspection-leaves.js (pure,
+  // shared with the PDF export and the tests). Leaves are always derived from
+  // the whole entry, so text flows forward and back as it grows or shrinks.
+  const Leaves = window.FilumLeaves;
 
-  function leafGeometry() {
-    return LEAF_GEOMETRY[store.settings.diaryLayout] || LEAF_GEOMETRY["simple-musky"];
+  function leafGeometry() { return Leaves.geometryFor(store.settings.diaryLayout); }
+
+  function pagesFor(entry) {
+    return Leaves.paginate(entry.content, entry.manualPageBreaks, leafGeometry(), {
+      parseBlocks: window.FilumRichText.parseBlocks,
+      onAutoBreak: (offset) => auditAutoBreak(entry.id, offset),
+    });
   }
 
-  function pagesFor(entry) { return paginate(entry.content, entry.manualPageBreaks, leafGeometry(), entry.id); }
-
-  function visibleLength(text) {
-    return String(text || "")
-      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]{8,64}\)/gi, "@$1")
-      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
-      .replace(/\*\*|__|\*|`/g, "")
-      .length;
-  }
-
-  // Greedy word wrap. Returns how many lines the text takes, and — when a
-  // line budget is given — the offset of the first word that no longer fits.
-  function wrapText(content, from, to, charsPerLine, budget = Infinity) {
-    const words = [];
-    const pattern = /\S+/g;
-    const slice = content.slice(from, to);
-    let match;
-    while ((match = pattern.exec(slice))) words.push({ start: from + match.index, text: match[0] });
-    let lines = 1;
-    let lineLength = 0;
-    for (const word of words) {
-      const length = visibleLength(word.text);
-      if (lineLength === 0) {
-        lineLength = length;
-      } else if (lineLength + 1 + length <= charsPerLine) {
-        lineLength += 1 + length;
-      } else {
-        lines += 1;
-        lineLength = length;
-      }
-      if (lineLength > charsPerLine) {
-        lines += Math.floor((lineLength - 1) / charsPerLine);
-        lineLength = ((lineLength - 1) % charsPerLine) + 1;
-      }
-      if (lines > budget) return { lines, breakAt: word.start };
-    }
-    return { lines, breakAt: null };
-  }
-
-  // A break may not land inside a mark or link; slide it back to the start of
-  // the span (or give up, if that is the start of the line).
-  function safeBreak(content, lineStart, lineEnd, breakAt) {
-    const line = content.slice(lineStart, lineEnd);
-    UNBREAKABLE.lastIndex = 0;
-    let match;
-    let point = breakAt;
-    while ((match = UNBREAKABLE.exec(line))) {
-      const spanStart = lineStart + match.index;
-      const spanEnd = spanStart + match[0].length;
-      if (spanStart < point && point < spanEnd) point = spanStart;
-    }
-    return point > lineStart ? point : null;
-  }
-
-  function layoutUnits(content, segStart, segEnd) {
-    const units = [];
-    for (const block of window.FilumRichText.parseBlocks(content.slice(segStart, segEnd))) {
-      if (block.type === "pre") {
-        units.push({ kind: "pre", start: segStart + block.start, end: segStart + block.end, first: true,
-          fixedLines: Math.max(1, block.code.split("\n").length) });
-      } else if (block.type === "list") {
-        block.items.forEach((item, index) => units.push({
-          kind: "item", start: segStart + item.start, end: segStart + item.end, first: index === 0,
-          indent: (item.level + 1) * 3,
-        }));
-      } else {
-        block.lines.forEach((line, index) => units.push({
-          kind: "line", start: segStart + line.start, end: segStart + line.end, first: index === 0, indent: 0,
-        }));
-      }
-    }
-    return units;
-  }
-
-  function paginate(content, manualBreaks, geometry, entryId) {
-    const pages = [];
-    const bounds = [0, ...manualBreaks.filter((offset) => offset > 0 && offset < content.length), content.length];
-    if (manualBreaks.includes(content.length) && content.length > 0) bounds.push(content.length);
-    for (let i = 0; i < bounds.length - 1; i += 1) {
-      paginateSegment(content, bounds[i], bounds[i + 1], geometry, entryId, pages, i === bounds.length - 2);
-    }
-    return pages.length ? pages : [{ start: 0, end: 0, text: "" }];
-  }
-
-  function paginateSegment(content, segStart, segEnd, geometry, entryId, pages, final) {
-    const units = layoutUnits(content, segStart, segEnd);
-    // A leaf turned by hand ends with the paragraph separator that keeps its
-    // words apart from the next leaf's; that separator is not a blank line.
-    const tail = units[units.length - 1];
-    if (!final && units.length > 1 && tail.kind === "line" && tail.first && tail.start === tail.end) units.pop();
-    const budget = geometry.lines;
-    let page = null;
-    let used = 0;
-    const open = (start) => { page = { start, end: start, filled: false }; used = 0; };
-    const close = (automatic) => {
-      pages.push({ start: page.start, end: page.end, text: content.slice(page.start, page.end) });
-      if (automatic) auditAutoBreak(entryId, page.end);
-    };
-    open(units.length ? units[0].start : segStart);
-    for (const unit of units) {
-      let from = unit.start;
-      let firstPiece = true;
-      const width = Math.max(20, geometry.charsPerLine - (unit.indent || 0));
-      for (;;) {
-        const gap = unit.first && firstPiece && page.filled ? PARAGRAPH_GAP_LINES : 0;
-        const cost = unit.kind === "pre" ? unit.fixedLines : wrapText(content, from, unit.end, width).lines;
-        const room = budget - used - gap;
-        if (cost <= room || (!page.filled && (unit.kind !== "line" || cost <= budget))) {
-          if (!page.filled) page.start = from;
-          page.end = unit.end;
-          page.filled = true;
-          used += gap + cost;
-          break;
-        }
-        const lines = Math.floor(page.filled ? room : budget);
-        const split = unit.kind === "line" && lines >= 1
-          ? wrapText(content, from, unit.end, width, lines).breakAt
-          : null;
-        const point = split === null ? null : safeBreak(content, unit.start, unit.end, split);
-        if (point !== null && point > from) {
-          if (!page.filled) page.start = from;
-          page.end = from + content.slice(from, point).replace(/\s+$/u, "").length;
-          page.filled = true;
-          close(true);
-          open(point);
-          from = point;
-          firstPiece = false;
-          continue;
-        }
-        if (!page.filled) {
-          // An unbreakable piece taller than a leaf still gets a leaf of its own.
-          page.start = from;
-          page.end = unit.end;
-          page.filled = true;
-          used = budget;
-          break;
-        }
-        close(true);
-        open(from);
-      }
-    }
-    close(false);
-  }
+  function pageIndexForOffset(pages, offset, preferred) { return Leaves.pageIndexForOffset(pages, offset, preferred); }
 
   function auditAutoBreak(entryId, offset) {
     const key = `${entryId}:${offset}`;
@@ -1042,20 +893,6 @@
     recordAudit("AUTO_PAGE_BREAK_CREATED", {
       destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: true, breakOffset: offset },
     });
-  }
-
-  // The leaf a caret belongs to. Between leaves (in the space or blank line
-  // that separates them) it belongs to the leaf before.
-  function pageIndexForOffset(pages, offset, preferred) {
-    const containing = [];
-    pages.forEach((page, index) => {
-      if (page.start <= offset && offset <= page.end) containing.push(index);
-    });
-    if (containing.includes(preferred)) return preferred;
-    if (containing.length) return containing[0];
-    let index = 0;
-    pages.forEach((page, i) => { if (page.end < offset) index = i; });
-    return index;
   }
 
   // ---- Where the caret was, per leaf ----------------------------------------
@@ -1132,6 +969,7 @@
     el.circDeleteLeaf.hidden = mode === "revision";
     el.circDeleteLeaf.disabled = page.start === page.end;
     el.circTurnLeaf.hidden = mode !== "writing" || !living || !entry.content.trim();
+    el.circExport.hidden = mode === "revision" || !entry.content.trim();
     el.circInput.readOnly = mode === "revision" || (!directInk && (mode !== "writing" || !living));
     el.circInput.setAttribute("aria-readonly", el.circInput.readOnly ? "true" : "false");
     if (reading) el.circLive.textContent = `Reading leaf ${currentPageIndex + 1} of ${pages.length}`;
@@ -1302,6 +1140,8 @@
 
   function handleGlobalKeydown(event) {
     if (el.circRoot.hidden) return;
+    // The export dialog owns its own keys; Escape closes it, not Circumspection.
+    if (window.FilumCircumspectionExport?.isOpen()) return;
     if (event.key === "Escape") {
       if (!el.circDeleteLeafConfirm.hidden) {
         event.preventDefault();
@@ -1657,7 +1497,13 @@
           ${
             catalogueScope === "binned"
               ? `<button class="circ-text-control" type="button" data-circ-restore="${entry.id}">Restore</button>`
-              : `<button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
+              : `<button class="circ-bin-control" type="button" data-circ-export="${entry.id}"
+                   aria-label="Export this note as a PDF" title="Export as PDF">
+                   <svg viewBox="0 0 24 24" aria-hidden="true">
+                     <path d="M12 4v11m0 0-4-4m4 4 4-4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"></path>
+                   </svg>
+                 </button>
+                 <button class="circ-bin-control" type="button" data-circ-bin="${entry.id}"
                    aria-label="Move this note to the Circumspection bin" title="Move to bin">
                    <svg viewBox="0 0 24 24" aria-hidden="true">
                      <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"></path>
@@ -1673,9 +1519,36 @@
     const read = event.target.closest("[data-circ-read]");
     const bin = event.target.closest("[data-circ-bin]");
     const restore = event.target.closest("[data-circ-restore]");
+    const exporting = event.target.closest("[data-circ-export]");
+    if (exporting) openExport(exporting.dataset.circExport, exporting);
     if (read) openEntry(read.dataset.circRead, "reading", "catalogue-item");
     if (bin) moveCatalogueEntry(bin.dataset.circBin, "binned");
     if (restore) moveCatalogueEntry(restore.dataset.circRestore, "active");
+  }
+
+  // ---- Export ------------------------------------------------------------------
+  //
+  // The leaves handed over are the leaves the writer sees — same geometry,
+  // same numbering — so "leaf 3 to leaf 7" in the dialog is exactly that.
+  function openExport(entryId, returnFocus) {
+    const exporter = window.FilumCircumspectionExport;
+    const entry = store.entries.find((item) => item.id === entryId);
+    if (!exporter || !entry || !entry.content.trim()) return;
+    persistNow();
+    const layout = store.settings.diaryLayout;
+    const showing = currentView === "writing" && activeEntry()?.id === entry.id;
+    exporter.open({
+      entry: clone(entry),
+      pages: pagesFor(entry).map((page) => ({ text: page.text })),
+      layout,
+      measureCh: leafGeometry().measureCh,
+      lines: leafGeometry().lines,
+      currentLeaf: showing ? currentPageIndex : null,
+      expandHtml: bridge?.expandAbbreviationsHtml,
+      onClose: () => { if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true }); },
+    });
+    // Only that an export was opened — never which leaves or what they say.
+    recordAudit("DIARY_EXPORT_OPENED");
   }
 
   function moveCatalogueEntry(entryId, status) {
@@ -1802,7 +1675,7 @@
       </div>
       <div class="circ-pref-field">
         <label for="circPrefWritingSize"><span>Writing size</span><output data-circ-output="writingSizePx">${settingValueLabel("writingSizePx", settings.writingSizePx)}</output></label>
-        <input id="circPrefWritingSize" type="range" min="16" max="24" step="1" value="${settings.writingSizePx}" data-circ-setting="writingSizePx">
+        <input id="circPrefWritingSize" type="range" min="15" max="24" step="1" value="${settings.writingSizePx}" data-circ-setting="writingSizePx">
       </div>
       <div class="circ-pref-field">
         <label for="circPrefDiaryLayout">Diary width</label>
@@ -1858,7 +1731,18 @@
     return String(value);
   }
 
-  function excerptFor(content) { return content.replace(/\s+/gu, " ").trim().slice(0, 120); }
+  // Excerpts read as words, not markup: "**light**" shows as "light".
+  function excerptFor(content) {
+    return content
+      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]{8,64}\)/gi, "@$1")
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
+      .replace(/\*\*|__|`/g, "")
+      .replace(/(^|[^*])\*(?!\*)([^*\n]+?)\*/g, "$1$2")
+      .replace(/^\s*(?:[-*]|\d+\.)\s+/gm, "")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 120);
+  }
   function wordCount(content) { return (content.trim().match(/\S+/gu) || []).length; }
   function formatDate(value) { return new Date(value).toLocaleString([], { dateStyle: "long", timeStyle: "short" }); }
   function clone(value) { return JSON.parse(JSON.stringify(value)); }

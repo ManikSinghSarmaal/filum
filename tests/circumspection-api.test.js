@@ -147,9 +147,9 @@ test("Circumspection persistence API", async (t) => {
           revisionMarker: "subtle",
           outwardPolicy: "fast-settle",
           liveInkOpacity: 0.7,
-          writingSizePx: 19,
+          writingSizePx: 17,
           writingMeasureCh: 74,
-          writingMeasureVersion: 2,
+          writingMeasureVersion: 3,
           diaryLayout: "simple-musky",
         },
         activeEntryId: null,
@@ -188,12 +188,22 @@ test("Circumspection persistence API", async (t) => {
       assert.equal(result.status, 200);
       assert.equal(result.body.settings.inkEffect, "none");
       assert.equal(result.body.settings.liveInkOpacity, 0.7);
-      assert.equal(result.body.settings.writingSizePx, 19);
+      assert.equal(result.body.settings.writingSizePx, 17);
       assert.equal(result.body.settings.writingMeasureCh, 74);
       assert.equal(result.body.settings.writingMeasureVersion, 1);
       assert.equal(result.body.settings.diaryLayout, "simple-musky");
       assert.equal(result.body.audit[0].destinationState, "LIVING_PAGE");
       assert.equal(result.body.audit[1].sourceState, "LIVING_PAGE");
+    });
+
+    await t.test("PUT accepts the diary export audit event (an unknown event would reject the save)", async () => {
+      await resetStore();
+      const store = await defaultStore();
+      store.audit = [{ ...makeAuditEvent(1), event: "DIARY_EXPORT_OPENED", mode: "reading",
+        sourceState: null, destinationState: null }];
+      const result = await request(baseUrl, "/api/circumspection", jsonRequest("PUT", store));
+      assert.equal(result.status, 200);
+      assert.equal(result.body.audit[0].event, "DIARY_EXPORT_OPENED");
     });
 
     await t.test("PUT round-trips canonical content that is still visually pending", async () => {
