@@ -1,0 +1,384 @@
+/* Filum — Web Journey popup. The same warm cream room as Filum itself:
+   no saturated colour, serif for the name, sans for everything else,
+   8 / 12 / 16 / 20 / 24 spacing, motion only on arrival. */
+
+:root {
+  --bg: #f5f1e8;
+  --bg-soft: #fbf8f2;
+  --panel: rgba(255, 252, 246, 0.82);
+  --ink: #161616;
+  --muted: #6e675c;
+  --line: rgba(22, 22, 22, 0.12);
+  --line-strong: rgba(22, 22, 22, 0.78);
+  --accent: #e7dfd0;
+  --accent-strong: #d8ccb7;
+  --link: #3f5d8a;
+  --radius-md: 14px;
+  --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --sans: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+/* Components set display; the hidden attribute must still win. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.popup {
+  width: 340px;
+  padding: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.8), transparent 40%),
+    var(--bg);
+  border-radius: var(--radius-md);
+  animation: arrive 360ms ease both;
+}
+
+@keyframes arrive {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---- Header ------------------------------------------------------------ */
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.brand-mark { color: var(--muted); }
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+  background: transparent;
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.status[data-state="connected"] .status-dot { background: var(--ink); border-color: var(--ink); }
+.status[data-state="connected"] { color: var(--ink); }
+.status[data-state="disconnected"] .status-dot { background: var(--muted); }
+
+/* ---- Sections ---------------------------------------------------------- */
+
+.section {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.label {
+  display: block;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---- Trail preview: a small flowing thread beside the visits ----------- */
+
+.trail-preview {
+  position: relative;
+}
+
+.trail-thread {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 28px;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.trail-thread path {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+
+.trail-list {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trail-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  color: var(--muted);
+}
+
+.trail-glyph {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1;
+  background: var(--bg);
+  border-radius: 50%;
+}
+
+.trail-glyph svg { display: block; margin: 0 auto; }
+.trail-glyph .ring { fill: var(--bg); stroke: currentColor; stroke-width: 1.3; }
+.trail-glyph .fill { fill: currentColor; }
+
+.trail-item.is-current { color: var(--ink); font-weight: 600; }
+.trail-item.is-current .trail-glyph { color: var(--ink); }
+
+.trail-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trail-more {
+  padding: 2px 0 2px 28px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+}
+
+.trail-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.following {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+}
+
+/* ---- Form -------------------------------------------------------------- */
+
+.capture {
+  display: grid;
+  gap: 12px;
+}
+
+.field { display: block; }
+
+.select-wrap {
+  position: relative;
+  display: block;
+}
+
+.select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+select,
+input[type="text"],
+textarea {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+select {
+  appearance: none;
+  padding-right: 32px;
+  text-overflow: ellipsis;
+}
+
+select:hover:not(:disabled),
+input[type="text"]:hover,
+textarea:hover { border-color: rgba(22, 22, 22, 0.28); }
+
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--line-strong);
+  outline-offset: 2px;
+}
+
+select:disabled { color: var(--muted); }
+
+.mode {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.choice input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.choice:has(input:disabled) { color: var(--muted); cursor: default; }
+
+.choice-body { padding-left: 22px; }
+
+.note {
+  min-height: 60px;
+  max-height: 60px;
+  resize: none;
+  line-height: 1.4;
+}
+
+.note::placeholder,
+input::placeholder { color: var(--muted); opacity: 1; }
+
+.capture-button {
+  width: 100%;
+  padding: 10px 16px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 180ms ease, transform 180ms ease;
+}
+
+.capture-button:hover:not(:disabled) {
+  background: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.capture-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.message {
+  min-height: 1em;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.message:empty { display: none; }
+
+/* ---- Footer ------------------------------------------------------------ */
+
+.foot { padding-top: 12px; }
+
+.server-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 180ms ease;
+}
+
+.server-toggle:hover { color: var(--ink); }
+
+.gear {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.server-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.server-form input { padding: 6px 10px; font-size: 12px; }
+
+.server-save {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.server-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popup { animation: none; }
+  * { transition: none !important; }
+}

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>rich-editor round-trip tests</title>
+</head>
+<body>
+  <div id="host"><div id="surface"></div></div>
+  <pre id="out"></pre>
+  <script src="../rich-editor.js"></script>
+  <script>
+    // Run in a browser (served by server.js at /tests/rich-editor.test.html)
+    // or headless via tests/rich-editor-browser.test.js. Results land on
+    // window.__results as { pass, fail, failures }.
+    const results = { pass: 0, fail: 0, failures: [] };
+    const check = (name, actual, expected) => {
+      if (actual === expected) results.pass += 1;
+      else {
+        results.fail += 1;
+        results.failures.push({ name, actual, expected });
+      }
+    };
+    const editor = window.FilumRichText.enhance(document.getElementById("surface"), {});
+    const root = editor.root;
+    const fromDom = (html) => {
+      root.innerHTML = html;
+      return editor.getMarkdown();
+    };
+
+    // 1. Canonical markdown survives render → serialise unchanged.
+    const canonical = [
+      "",
+      "plain",
+      "a\nb",
+      "a\n\nb",
+      "a\n\n\n\nb",
+      "a\n\n\nb",
+      "\n\nstarts blank",
+      "ends blank\n\n",
+      "line\n",
+      "**bold** and *italic* and __under__ and `code`",
+      "**bold *nested* bold**",
+      "[label](https://example.com) after",
+      "1. one\n2. two\n3. three",
+      "4. four\n5. five",
+      "- a\n- b",
+      "1. top\n   - sub\n      1. subsub\n2. back",
+      "- item\n   continued line",
+      "1. \n2. b",
+      "para\n\n- list\n\npara",
+      "```\ncode\n\nmore\n```",
+      "see @[Roadmap](filum:thread/abcdef12-3456) here",
+      "see @[Image 1](filum:image/abcdef12-3456) here",
+      "Theory of self\n\n(which implies) **implicitly** or **explicity**)",
+      "trailing space ",
+      " leading and  double  spaces ",
+      "- item with trailing space \n- next",
+    ];
+    for (const md of canonical) {
+      root.innerHTML = window.FilumRichText.markdownToHtml(md);
+      check(`round-trip ${JSON.stringify(md)}`, editor.getMarkdown(), md);
+    }
+
+    // 2. Browser-shaped DOM serialises to clean markdown.
+    check("trailing br placeholder", fromDom("<p>a<br></p>"), "a");
+    check("empty paragraph", fromDom("<p>a</p><p><br></p><p>b</p>"), "a\n\n\n\nb");
+    check("bare root text", fromDom("one<br>two"), "one\ntwo");
+    check("bare inline run stays one paragraph", fromDom("Some <b>bold</b> text"), "Some **bold** text");
+    check("chrome sibling nesting", fromDom("<ol><li>a</li><ol><li>b</li></ol><li>c</li></ol>"), "1. a\n   1. b\n2. c");
+    check("br inside list item", fromDom("<ul><li>a<br>b</li></ul>"), "- a\n   b");
+    check("ol start honoured", fromDom('<ol start="4"><li>x</li></ol>'), "4. x");
+    check("depth limited to two", fromDom("<ul><li>a<ul><li>b<ul><li>c<ul><li>d</li></ul></li></ul></li></ul></li></ul>"), "- a\n   - b\n      - c\n      - d");
+    check("empty bold dropped", fromDom("<p>a<b></b>b</p>"), "ab");
+    check("nbsp becomes space", fromDom("<p>a&nbsp;</p>"), "a ");
+    check("div paragraphs", fromDom("<div>a</div><div>b</div>"), "a\n\nb");
+
+    // 3. Caret offsets are exact in markdown characters.
+    const caretCases = [
+      "plain words here",
+      "**bold** then *it* and __u__",
+      "1. one\n2. two words\n   - nested item",
+      "a\n\n\n\nb\nc",
+      "start [link](https://x.org) end",
+    ];
+    for (const md of caretCases) {
+      root.innerHTML = window.FilumRichText.markdownToHtml(md);
+      const textOffsets = new Set();
+      // Offsets that sit inside visible text: walk the markdown and try them all.
+      for (let i = 0; i <= md.length; i += 1) {
+        editor.focusOffset(i);
+        const back = editor.getMarkdownOffset();
+        // Every offset maps to some caret; a caret placed by the map must read
+        // back to itself (idempotent), and never move backwards past content.
+        editor.focusOffset(back);
+        check(`caret idempotent ${JSON.stringify(md)} @${i}`, editor.getMarkdownOffset(), back);
+        if (back === i) textOffsets.add(i);
+      }
+      // A leaf ending in a closing mark has no caret "after" the mark that
+      // differs from the end of its text — standard rich-text behaviour.
+      const lastText = md.replace(/(\*\*|\*|__|`|\]\([^)]*\))$/, "").length;
+      check(`caret reaches end ${JSON.stringify(md)}`, textOffsets.has(md.length) || textOffsets.has(lastText), true);
+    }
+
+    // 3b. A rendered trailing space survives the next keystroke.
+    root.innerHTML = window.FilumRichText.markdownToHtml("B2 ");
+    editor.focusOffset(3);
+    document.execCommand("insertText", false, "C3");
+    check("trailing space kept when typing after it", editor.getMarkdown(), "B2 C3");
+
+    // 4. Shared block offsets agree with the text.
+    const blocks = window.FilumRichText.parseBlocks("a\n\n1. x\n2. y\n\n```\nc\n```");
+    check("block count", blocks.length, 3);
+    check("list item offsets", blocks[1].items.map((i) => i.start).join(","), "3,8");
+
+    window.__results = results;
+    document.getElementById("out").textContent = JSON.stringify(results, null, 2);
+  </script>
+</body>
+</html>

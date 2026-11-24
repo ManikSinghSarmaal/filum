@@ -22,6 +22,15 @@ in place, including words on earlier leaves. Page breaks can be added at the
 caret with **Turn the leaf** or `Cmd/Ctrl+Enter`. Entries have no titles and
 remain independent from Filum threads.
 
+Leaves keep their shape: each diary width holds a fixed number of lines, so
+the same words always land on the same leaf. Editing in the middle of a full
+leaf keeps you there while the overflow moves on; typing past the edge carries
+you onto the next leaf, and the arrow keys walk across leaves the same way.
+Type `1. ` or `- ` to start a list, and Tab / Shift+Tab to nest it (up to two
+levels below the main point). A written leaf opens without a blinking caret —
+click where you want to write, or just start typing to continue where you
+left off. The → arrow on a written last leaf opens a fresh one.
+
 The Catalogue is a wide typographic list: opening an entry reads and edits in
 one place, while its bin control moves it to a recoverable local bin. Filum
 keeps at most one blank entry and creates the next leaf only when writing
@@ -32,6 +41,23 @@ customisation surface. The direct writing model uses `Ink effect: None`, with
 no delayed reveal, blur, or post-text animation. Circumspection is
 desktop/web-first; responsive mobile layouts remain available as a secondary
 path.
+
+## Abbreviations and images
+
+Under **Preferences → Abbreviations**, add your own short forms (for example
+`aca` → `also called as`). Wherever Filum shows text for reading — task
+titles, notes, summaries — the full form appears; editors always keep exactly
+what you typed.
+
+Images attached to a task open in place when clicked. In a task's notes, type
+`@` to reference one of that task's images alongside your threads.
+
+## Following the thread
+
+In **Retrospect**, click any completed task to read it — notes, images and
+all — without bringing it back; "Return to thread" is there if you want it
+again. A YouTube link in a task's notes shows a small preview that plays in
+place only when you click it.
 
 ## A quick look
 
@@ -139,6 +165,48 @@ mkdir -p ~/Documents/filum-threads
 FILUM_THREADS_DIR=~/Documents/filum-threads node server.js
 ```
 
+## Chrome Extension — Web Journey
+
+Web Journey remembers how you found things. While researching, open the
+Filum extension on any page: it shows the trail that led you there (a search,
+the pages in between, the page in front of you), and pins it to a task in one
+of your threads. From then on, pages you open in that tab are added to the
+same trail until you close the tab. Later, in **Follow the thread**, a quiet
+**✦ Web journey** button on the task opens the trail as a flowing thread;
+hover any point to see the page's own description, how you arrived, and
+anything you had highlighted. The extension does nothing until you open it,
+shows no badges, and only ever talks to Filum on your own computer.
+
+### Load it
+
+1. Start Filum (`node server.js`).
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Click **Load unpacked** and choose the `extension/` folder in this repo.
+4. Pin **Filum — Web Journey** from the puzzle-piece menu if you like.
+
+Chrome will mention reading browsing history: the extension uses it only to
+rebuild a trail when you open the popup.
+
+### Use it
+
+1. On any page, click the Filum icon. The dot beside **Connected** is dark
+   when Filum is reachable.
+2. Check the trail preview, pick a **Thread**, then **Create new task** (the
+   title is pre-filled from the page) or **Add to existing task**.
+3. Optionally answer **What caught your eye?** Highlighted text on the page
+   is saved automatically.
+4. Press **✦ Capture to thread**. A line like
+   `✦ web journey — 3 steps from Google: …` is added to the task's notes.
+
+Trails can be renamed (hover the label, click ✎) or removed (**Remove this
+trail**; undo brings it back).
+
+### Server address
+
+The popup uses `localhost:4317`. If you run Filum on another port, click
+**Server** at the bottom of the popup and enter, for example,
+`localhost:8080`. Only addresses on this computer are accepted.
+
 ## Custom port
 
 The default port is `4317`.
@@ -202,6 +270,91 @@ Stop it:
 
 ```bash
 pkill -f "node server.js"
+```
+
+### Optional: launchd service on macOS
+
+If you want Filum to start automatically on login/boot on macOS, create a user `LaunchAgent`.
+
+First, find your node binary path and current repo path:
+
+```bash
+which node
+pwd
+```
+
+Ensure the `~/Library/LaunchAgents` directory exists:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+```
+
+Create the plist service file:
+
+```bash
+nano ~/Library/LaunchAgents/com.filum.server.plist
+```
+
+Paste the following, replacing:
+- `/opt/homebrew/bin/node` with your actual node path (from `which node`)
+- `/absolute/path/to/filum` with your actual repository path (from `pwd`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.filum.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>server.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/absolute/path/to/filum</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FILUM_PORT</key>
+        <string>4317</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/filum.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/filum-error.log</string>
+</dict>
+</plist>
+```
+
+Load and start the service:
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.filum.server.plist
+```
+
+Check logs:
+
+```bash
+tail -f /tmp/filum.log
+```
+
+To stop and disable it later:
+
+```bash
+launchctl unload -w ~/Library/LaunchAgents/com.filum.server.plist
 ```
 
 ## Optional: systemd service on Linux

@@ -91,6 +91,7 @@ test("general settings API", async (t) => {
         interfaceMotion: "full",
         keyboardAssistedNavigation: true,
         gitVersioningEnabled: false,
+        abbreviations: [],
       });
     });
 
@@ -116,6 +117,7 @@ test("general settings API", async (t) => {
         interfaceMotion: "full",
         keyboardAssistedNavigation: true,
         gitVersioningEnabled: false,
+        abbreviations: [],
       });
     });
 
@@ -131,6 +133,10 @@ test("general settings API", async (t) => {
         interfaceMotion: "quiet",
         keyboardAssistedNavigation: false,
         gitVersioningEnabled: true,
+        abbreviations: [
+          { short: "aca", full: "also called as" },
+          { short: "w.r.t", full: "with respect to" },
+        ],
       };
       const saved = await request(baseUrl, put(desired));
       assert.equal(saved.status, 200);
@@ -243,6 +249,13 @@ test("general settings API", async (t) => {
         { ...valid, interfaceMotion: "spinning" },
         { ...valid, keyboardAssistedNavigation: "yes" },
         { ...valid, gitVersioningEnabled: 1 },
+        { ...valid, abbreviations: "aca" },
+        { ...valid, abbreviations: [{ short: "", full: "empty short" }] },
+        { ...valid, abbreviations: [{ short: "has space", full: "x" }] },
+        { ...valid, abbreviations: [{ short: "aca", full: "" }] },
+        { ...valid, abbreviations: [{ short: "aca", full: "x".repeat(121) }] },
+        { ...valid, abbreviations: [{ short: "aca", full: "a" }, { short: "ACA", full: "b" }] },
+        { ...valid, abbreviations: Array.from({ length: 51 }, (_, i) => ({ short: `a${i}`, full: "x" })) },
       ];
       for (const invalid of invalidVariants) {
         const result = await request(baseUrl, put(invalid));

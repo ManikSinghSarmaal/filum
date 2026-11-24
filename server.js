@@ -366,7 +366,28 @@ function defaultSettings() {
     interfaceMotion: "full",
     keyboardAssistedNavigation: true,
     gitVersioningEnabled: false,
+    abbreviations: [],
   };
+}
+
+// Personal abbreviations — same rules as normalizeAbbreviations() in app.js.
+const ABBREVIATION_SHORT = /^[\p{L}\p{N}][\p{L}\p{N}'._-]{0,15}$/u;
+const MAX_ABBREVIATIONS = 50;
+
+function sanitizeAbbreviations(raw) {
+  if (!Array.isArray(raw) || raw.length > MAX_ABBREVIATIONS) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const short = typeof item.short === "string" ? item.short.trim() : "";
+    const full = typeof item.full === "string" ? item.full.replace(/\s+/g, " ").trim() : "";
+    if (!ABBREVIATION_SHORT.test(short) || !full || full.length > 120) return null;
+    if (seen.has(short.toLowerCase())) return null;
+    seen.add(short.toLowerCase());
+    out.push({ short, full });
+  }
+  return out;
 }
 
 // Pick known keys only, validate each; return null when the body is unusable.
@@ -421,6 +442,11 @@ function sanitizeSettings(body) {
   if (body.gitVersioningEnabled !== undefined) {
     if (typeof body.gitVersioningEnabled !== "boolean") return null;
     out.gitVersioningEnabled = body.gitVersioningEnabled;
+  }
+  if (body.abbreviations !== undefined) {
+    const abbreviations = sanitizeAbbreviations(body.abbreviations);
+    if (!abbreviations) return null;
+    out.abbreviations = abbreviations;
   }
   return out;
 }
@@ -1321,8 +1347,39 @@ function streamFile(res, filePath) {
   fssync.createReadStream(filePath).pipe(res);
 }
 
+// ---- CORS (Web Journey extension) -------------------------------------------
+//
+// The Web Journey browser extension talks to this server from its own origin
+// (chrome-extension://<id>). Only extension origins are echoed back: a blanket
+// "*" would let any website the user happens to visit read and rewrite their
+// threads through localhost, which is exactly the outward reach design.md
+// rules out. Same-origin requests from the Filum tab send no Origin header for
+// GETs and need no CORS headers at all.
+const EXTENSION_ORIGIN = /^(chrome-extension|moz-extension|safari-web-extension):\/\/[a-z0-9-]+$/i;
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || !EXTENSION_ORIGIN.test(origin)) return false;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const corsAllowed = applyCors(req, res);
+  if (req.method === "OPTIONS") {
+    if (corsAllowed) {
+      res.writeHead(204, {
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "86400",
+      });
+    } else {
+      res.writeHead(204, { "Vary": "Origin" });
+    }
+    return res.end();
+  }
   try {
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);

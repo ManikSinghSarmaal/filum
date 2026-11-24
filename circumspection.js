@@ -60,6 +60,9 @@
   let saveTimer = null;
   let saveChain = Promise.resolve();
   let serverWritable = false;
+  let serverReconciled = false; // the mirror has been merged with the server copy
+  let saveRetryTimer = null;
+  let saveRetryDelay = 0;
   let lastScheduledAt = 0;
   let historyDepth = 0;
   let renderingPreferences = false;
@@ -104,6 +107,9 @@
       if (!composing) acceptCanonicalInput(event.inputType || "insertText", false);
     });
     el.circInput.addEventListener("paste", handlePaste);
+    document.addEventListener("selectionchange", rememberCaret);
+    window.addEventListener("online", () => { if (pendingSave()) persistNow(); });
+    el.circField.tabIndex = -1;
     el.circInput.addEventListener("keydown", handleInputKeydown);
     el.circInput.addEventListener("select", keepAppendBoundary);
     el.circInput.addEventListener("click", keepAppendBoundary);
@@ -143,6 +149,7 @@
       store = mirror ? reconcileStores(loaded, mirror) : loaded;
       serverNeedsSync = mirror ? JSON.stringify(store) !== JSON.stringify(loaded) : false;
       serverWritable = true;
+      serverReconciled = true;
       writeMirror();
     } catch (error) {
       serverWritable = false;
@@ -328,8 +335,13 @@
   }
 
   function writeMirror() {
-    try { localStorage.setItem(MIRROR_KEY, JSON.stringify(store)); }
-    catch { /* local storage may be unavailable */ }
+    try {
+      localStorage.setItem(MIRROR_KEY, JSON.stringify(store));
+    } catch {
+      // Over quota: the audit trail is a debugging window, the writing is not.
+      try { localStorage.setItem(MIRROR_KEY, JSON.stringify({ ...store, audit: [] })); }
+      catch (error) { console.warn("[filum] Circumspection could not write its local mirror:", error); }
+    }
   }
 
   function markStoreDirty(immediate = false) {
@@ -339,33 +351,68 @@
     saveTimer = setTimeout(() => persistNow(), immediate ? 0 : SAVE_DEBOUNCE_MS);
   }
 
+  function pendingSave() {
+    return Boolean(saveTimer || saveRetryTimer || !serverWritable);
+  }
+
+  // Every save is attempted. A failure keeps the writing in the local mirror
+  // and retries with a gentle backoff (2 s → 15 s) until the server answers;
+  // it never silently stops trying for the rest of the session.
   function persistNow() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
     discardTransientBlankDraft();
     writeMirror();
-    if (!serverWritable) return Promise.resolve(false);
-    const payload = JSON.stringify(store);
     saveChain = saveChain.then(async () => {
       try {
+        if (!serverReconciled) await reconcileWithServer();
         const response = await fetch("/api/circumspection", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: payload,
+          body: JSON.stringify(store),
         });
-        if (!response.ok) throw new Error(`Circumspection save failed (${response.status})`);
+        if (!response.ok) {
+          const detail = await response.text().catch(() => "");
+          throw new Error(`Circumspection save failed (${response.status}) ${detail}`);
+        }
+        serverWritable = true;
+        saveRetryDelay = 0;
+        if (saveRetryTimer) clearTimeout(saveRetryTimer);
+        saveRetryTimer = null;
         recordAudit("SAVE_SUCCEEDED", { destinationState: "SAVED" });
         writeMirror();
         return true;
       } catch (error) {
-        console.warn("[filum] Circumspection remained in its local mirror:", error);
+        console.warn("[filum] Circumspection kept in its local mirror; will retry:", error);
+        if (serverWritable) recordAudit("SAVE_FELL_BACK_OFFLINE", { destinationState: "OFFLINE_MIRRORED" });
         serverWritable = false;
-        recordAudit("SAVE_FELL_BACK_OFFLINE", { destinationState: "OFFLINE_MIRRORED" });
         writeMirror();
+        scheduleSaveRetry();
         return false;
       }
     });
     return saveChain;
+  }
+
+  function scheduleSaveRetry() {
+    if (saveRetryTimer) return;
+    saveRetryDelay = Math.min(15_000, Math.max(2_000, saveRetryDelay * 2));
+    saveRetryTimer = setTimeout(() => {
+      saveRetryTimer = null;
+      persistNow();
+    }, saveRetryDelay);
+  }
+
+  // When Filum started without its server, merge whatever the server holds
+  // before the first write, so a device-only copy never overwrites it.
+  async function reconcileWithServer() {
+    const response = await fetch("/api/circumspection", { headers: { accept: "application/json" } });
+    if (!response.ok) throw new Error(`Circumspection load failed (${response.status})`);
+    const loaded = normalizeStore(await response.json());
+    if (!loaded) throw new Error("Circumspection store was not valid");
+    store = reconcileStores(loaded, store);
+    if (currentEntryId && !store.entries.some((entry) => entry.id === currentEntryId)) currentEntryId = store.activeEntryId;
+    serverReconciled = true;
   }
 
   function discardTransientBlankDraft() {
@@ -509,9 +556,11 @@
     el.circInput.readOnly = nextMode !== "writing";
     showWriting();
     renderEntry();
-    if (nextMode === "writing") focusAppend();
-    else if (store.settings.inkEffect === "none") focusDirectOffset(pages[0]?.start || 0);
-    else requestAnimationFrame(() => el.circInput.focus({ preventScroll: true }));
+    // An empty leaf is ready to write on; a written one opens quietly and the
+    // caret appears wherever the writer clicks.
+    const shownPage = pagesFor(entry)[currentPageIndex];
+    if (!shownPage.text.trim()) requestAnimationFrame(() => placeCaret(shownPage.start));
+    else requestAnimationFrame(() => el.circField.focus({ preventScroll: true }));
     bridge?.updateContext?.({ entryId: entry.id, mode: nextMode, meaningful: false });
     if (trigger === "catalogue-item") {
       bridge?.updateContext?.({ entryId: entry.id, action: "entry-selected", mode: nextMode, meaningful: true });
@@ -598,7 +647,13 @@
     // when the user interacts with the editable surface itself.
     if (event.target === el.circInput || el.circInput.contains(event.target)) return;
     if (mode === "revision") el.circRevisionInput.focus({ preventScroll: true });
-    else if (store.settings.inkEffect === "none") el.circInput.focus({ preventScroll: true });
+    else if (store.settings.inkEffect === "none") {
+      // A click beside the text continues the leaf; it never jumps to the top.
+      event.preventDefault();
+      const entry = activeEntry();
+      const page = entry ? pagesFor(entry)[currentPageIndex] : null;
+      if (page) placeCaret(rememberedCaret(currentPageIndex, page) ?? page.end);
+    }
     else if (mode === "writing") focusAppend();
     else el.circInput.focus({ preventScroll: true });
   }
@@ -607,27 +662,27 @@
     const entry = activeEntry();
     const directInk = store.settings.inkEffect === "none";
     if (!entry || (mode !== "writing" && !(directInk && mode === "reading"))) return;
-    const incomingLeaf = el.circInput.value;
+    let leaf = el.circInput.value;
+    const caretInLeaf = circEditor.hasFocus() ? el.circInput.selectionStart : leaf.length;
     hideDeleteConfirmation();
     const previousContent = entry.content;
-    const previousPages = pagesFor(entry);
-    const currentPage =
-      previousPages[currentPageIndex] || { start: displayedPageStart, end: displayedPageEnd };
-    const incoming =
-      previousContent.slice(0, currentPage.start) +
-      incomingLeaf +
-      previousContent.slice(currentPage.end);
+    // Write the leaf back into exactly the range it was rendered from. Pages
+    // are never re-derived here: what is on screen is what gets replaced.
+    const start = displayedPageStart;
+    let after = previousContent.slice(displayedPageEnd);
+    // The seam between two leaves: a space typed at the end of a leaf that
+    // already borders one, or a new paragraph that does, is not doubled.
+    if (/[ \t]$/.test(leaf) && /^[ \t]/.test(after)) leaf = leaf.replace(/[ \t]+$/, "");
+    if (/\n$/.test(leaf) && /^[ \t]+/.test(after)) after = after.replace(/^[ \t]+/, "");
+    const incoming = previousContent.slice(0, start) + leaf + after;
     if (incoming === previousContent) return;
+    const caret = start + Math.min(caretInLeaf, leaf.length);
     const priorLength = previousContent.length;
-    const wasEarlierLeaf = currentPageIndex < previousPages.length - 1;
     const edit = changedRange(previousContent, incoming);
     entry.content = incoming;
     entry.manualPageBreaks = offsetsAfterEdit(entry.manualPageBreaks, edit, incoming.length);
     entry.settledUntil = directInk ? incoming.length : Math.min(entry.settledUntil, incoming.length);
-    entry.lastMeaningfulAnchor = Math.min(
-      currentPage.start + (el.circInput.selectionStart ?? incomingLeaf.length),
-      incoming.length
-    );
+    entry.lastMeaningfulAnchor = Math.min(caret, incoming.length);
     entry.lastViewedAnchor = entry.lastMeaningfulAnchor;
     entry.updatedAt = now();
     changedInVisit = true;
@@ -646,15 +701,17 @@
       markStoreDirty();
     }
     el.circListening.classList.add("is-quiet");
-    const previousPageCount = previousPages.length;
+    // Follow the caret, not the end of the text: editing in the middle of a
+    // full leaf keeps you there while the overflow moves on quietly; typing
+    // past the edge carries you onto the next leaf.
     const pages = pagesFor(entry);
-    currentPageIndex = directInk && wasEarlierLeaf
-      ? Math.min(currentPageIndex, pages.length - 1)
-      : Math.max(0, pages.length - 1);
-    renderEntry();
+    const previousIndex = currentPageIndex;
+    currentPageIndex = pageIndexForOffset(pages, caret, previousIndex);
+    if (directInk) mode = currentPageIndex === pages.length - 1 ? "writing" : "reading";
+    renderEntry({ caret });
+    rememberCaret();
     if (!directInk) scheduleCommitted(entry, priorLength, forceFinalToken, false);
-    if (pages.length > previousPageCount) animateLeafChange(true);
-    keepAppendBoundary();
+    if (currentPageIndex !== previousIndex) animateLeafChange(true);
   }
 
   function allowedInputType(value) {
@@ -811,73 +868,237 @@
     lastScheduledAt = 0;
   }
 
-  function pageCapacity() {
-    const width = el.circField.clientWidth || Math.min(window.innerWidth - 48, 760);
-    const height = Math.max(380, Math.min(window.innerHeight * 0.58, 720));
-    const fontSize = store.settings.writingSizePx;
-    const charsPerLine = Math.max(34, Math.floor(width / (fontSize * 0.54)));
-    const lines = Math.max(12, Math.floor(height / (fontSize * 1.72)));
-    return Math.max(500, charsPerLine * lines);
+  // ---- Leaves ----------------------------------------------------------------
+  //
+  // A leaf holds a fixed number of lines of a fixed number of characters for
+  // each diary type, independent of window size, zoom, or writing size. The
+  // same words therefore always land on the same leaf, and the boundary a
+  // leaf was rendered with is the boundary it is written back into.
+  //
+  // Lines are counted the way they look: a short line ("Theory of self")
+  // still takes a whole line, long lines wrap word by word, paragraphs leave
+  // a half-line of air. A leaf breaks between words — never inside **bold**,
+  // a link, or a list item — and text flows back when earlier text shrinks,
+  // because pages are always derived from the whole entry.
+  const LEAF_GEOMETRY = {
+    "simple-musky": { charsPerLine: 80, lines: 18 },
+    "wider-musky": { charsPerLine: 96, lines: 18 },
+  };
+  const PARAGRAPH_GAP_LINES = 0.5;
+  const UNBREAKABLE = /@\[[^\]]+\]\(filum:[a-z]+\/[a-z0-9-]+\)|\[[^\]]+\]\([^)]+\)|\*\*.+?\*\*|__.+?__|\*[^*\n]+?\*|`[^`\n]+`/g;
+
+  function leafGeometry() {
+    return LEAF_GEOMETRY[store.settings.diaryLayout] || LEAF_GEOMETRY["simple-musky"];
   }
 
-  function pagesFor(entry) { return paginate(entry.content, entry.manualPageBreaks, pageCapacity(), entry.id); }
+  function pagesFor(entry) { return paginate(entry.content, entry.manualPageBreaks, leafGeometry(), entry.id); }
 
-  function pagesForLength(length, entry) {
-    const content = entry.content.slice(0, length);
-    return paginate(content, entry.manualPageBreaks.filter((offset) => offset <= length), pageCapacity(), entry.id);
-  }
-
-  function paginate(content, manualBreaks, capacity, entryId) {
-    const pages = [];
-    const boundaries = [...manualBreaks, content.length];
-    let segmentStart = 0;
-    const addSegment = (segmentEnd, manual) => {
-      const segment = content.slice(segmentStart, segmentEnd);
-      const tokens = tokenize(segment, true);
-      let pageStart = segmentStart;
-      let cursor = segmentStart;
-      let count = 0;
-      for (const token of tokens) {
-        const absoluteStart = segmentStart + token.start;
-        const absoluteEnd = segmentStart + token.end;
-        const visibleLength = visibleTokenLength(token.text);
-        if (count && count + visibleLength > capacity) {
-          pages.push({ start: pageStart, end: cursor, text: content.slice(pageStart, cursor) });
-          const key = `${entryId}:${cursor}`;
-          if (activeEntry()?.id === entryId && !auditedPageBreaks.has(key)) {
-            auditedPageBreaks.add(key);
-            recordAudit("AUTO_PAGE_BREAK_CREATED", {
-              destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: true, breakOffset: cursor },
-            });
-          }
-          pageStart = absoluteStart;
-          count = 0;
-        }
-        cursor = absoluteEnd;
-        count += visibleLength;
-      }
-      cursor = Math.max(cursor, segmentEnd);
-      if (cursor > pageStart || !pages.length || manual) {
-        pages.push({ start: pageStart, end: cursor, text: content.slice(pageStart, cursor) });
-      }
-      segmentStart = segmentEnd;
-    };
-    manualBreaks.forEach((offset) => addSegment(offset, true));
-    addSegment(content.length, false);
-    if (manualBreaks.at(-1) === content.length) pages.push({ start: content.length, end: content.length, text: "" });
-    return pages.length ? pages : [{ start: 0, end: 0, text: "" }];
-  }
-
-  function visibleTokenLength(text) {
+  function visibleLength(text) {
     return String(text || "")
-      .replace(/@\[([^\]]+)\]\(filum:thread\/[a-z0-9-]{8,64}\)/gi, "@$1")
+      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]{8,64}\)/gi, "@$1")
       .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
       .replace(/\*\*|__|\*|`/g, "")
-      .replace(/^\s*(?:-\s+|\d+\.\s+)/gm, "")
       .length;
   }
 
-  function renderEntry() {
+  // Greedy word wrap. Returns how many lines the text takes, and — when a
+  // line budget is given — the offset of the first word that no longer fits.
+  function wrapText(content, from, to, charsPerLine, budget = Infinity) {
+    const words = [];
+    const pattern = /\S+/g;
+    const slice = content.slice(from, to);
+    let match;
+    while ((match = pattern.exec(slice))) words.push({ start: from + match.index, text: match[0] });
+    let lines = 1;
+    let lineLength = 0;
+    for (const word of words) {
+      const length = visibleLength(word.text);
+      if (lineLength === 0) {
+        lineLength = length;
+      } else if (lineLength + 1 + length <= charsPerLine) {
+        lineLength += 1 + length;
+      } else {
+        lines += 1;
+        lineLength = length;
+      }
+      if (lineLength > charsPerLine) {
+        lines += Math.floor((lineLength - 1) / charsPerLine);
+        lineLength = ((lineLength - 1) % charsPerLine) + 1;
+      }
+      if (lines > budget) return { lines, breakAt: word.start };
+    }
+    return { lines, breakAt: null };
+  }
+
+  // A break may not land inside a mark or link; slide it back to the start of
+  // the span (or give up, if that is the start of the line).
+  function safeBreak(content, lineStart, lineEnd, breakAt) {
+    const line = content.slice(lineStart, lineEnd);
+    UNBREAKABLE.lastIndex = 0;
+    let match;
+    let point = breakAt;
+    while ((match = UNBREAKABLE.exec(line))) {
+      const spanStart = lineStart + match.index;
+      const spanEnd = spanStart + match[0].length;
+      if (spanStart < point && point < spanEnd) point = spanStart;
+    }
+    return point > lineStart ? point : null;
+  }
+
+  function layoutUnits(content, segStart, segEnd) {
+    const units = [];
+    for (const block of window.FilumRichText.parseBlocks(content.slice(segStart, segEnd))) {
+      if (block.type === "pre") {
+        units.push({ kind: "pre", start: segStart + block.start, end: segStart + block.end, first: true,
+          fixedLines: Math.max(1, block.code.split("\n").length) });
+      } else if (block.type === "list") {
+        block.items.forEach((item, index) => units.push({
+          kind: "item", start: segStart + item.start, end: segStart + item.end, first: index === 0,
+          indent: (item.level + 1) * 3,
+        }));
+      } else {
+        block.lines.forEach((line, index) => units.push({
+          kind: "line", start: segStart + line.start, end: segStart + line.end, first: index === 0, indent: 0,
+        }));
+      }
+    }
+    return units;
+  }
+
+  function paginate(content, manualBreaks, geometry, entryId) {
+    const pages = [];
+    const bounds = [0, ...manualBreaks.filter((offset) => offset > 0 && offset < content.length), content.length];
+    if (manualBreaks.includes(content.length) && content.length > 0) bounds.push(content.length);
+    for (let i = 0; i < bounds.length - 1; i += 1) {
+      paginateSegment(content, bounds[i], bounds[i + 1], geometry, entryId, pages, i === bounds.length - 2);
+    }
+    return pages.length ? pages : [{ start: 0, end: 0, text: "" }];
+  }
+
+  function paginateSegment(content, segStart, segEnd, geometry, entryId, pages, final) {
+    const units = layoutUnits(content, segStart, segEnd);
+    // A leaf turned by hand ends with the paragraph separator that keeps its
+    // words apart from the next leaf's; that separator is not a blank line.
+    const tail = units[units.length - 1];
+    if (!final && units.length > 1 && tail.kind === "line" && tail.first && tail.start === tail.end) units.pop();
+    const budget = geometry.lines;
+    let page = null;
+    let used = 0;
+    const open = (start) => { page = { start, end: start, filled: false }; used = 0; };
+    const close = (automatic) => {
+      pages.push({ start: page.start, end: page.end, text: content.slice(page.start, page.end) });
+      if (automatic) auditAutoBreak(entryId, page.end);
+    };
+    open(units.length ? units[0].start : segStart);
+    for (const unit of units) {
+      let from = unit.start;
+      let firstPiece = true;
+      const width = Math.max(20, geometry.charsPerLine - (unit.indent || 0));
+      for (;;) {
+        const gap = unit.first && firstPiece && page.filled ? PARAGRAPH_GAP_LINES : 0;
+        const cost = unit.kind === "pre" ? unit.fixedLines : wrapText(content, from, unit.end, width).lines;
+        const room = budget - used - gap;
+        if (cost <= room || (!page.filled && (unit.kind !== "line" || cost <= budget))) {
+          if (!page.filled) page.start = from;
+          page.end = unit.end;
+          page.filled = true;
+          used += gap + cost;
+          break;
+        }
+        const lines = Math.floor(page.filled ? room : budget);
+        const split = unit.kind === "line" && lines >= 1
+          ? wrapText(content, from, unit.end, width, lines).breakAt
+          : null;
+        const point = split === null ? null : safeBreak(content, unit.start, unit.end, split);
+        if (point !== null && point > from) {
+          if (!page.filled) page.start = from;
+          page.end = from + content.slice(from, point).replace(/\s+$/u, "").length;
+          page.filled = true;
+          close(true);
+          open(point);
+          from = point;
+          firstPiece = false;
+          continue;
+        }
+        if (!page.filled) {
+          // An unbreakable piece taller than a leaf still gets a leaf of its own.
+          page.start = from;
+          page.end = unit.end;
+          page.filled = true;
+          used = budget;
+          break;
+        }
+        close(true);
+        open(from);
+      }
+    }
+    close(false);
+  }
+
+  function auditAutoBreak(entryId, offset) {
+    const key = `${entryId}:${offset}`;
+    if (activeEntry()?.id !== entryId || auditedPageBreaks.has(key)) return;
+    auditedPageBreaks.add(key);
+    recordAudit("AUTO_PAGE_BREAK_CREATED", {
+      destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: true, breakOffset: offset },
+    });
+  }
+
+  // The leaf a caret belongs to. Between leaves (in the space or blank line
+  // that separates them) it belongs to the leaf before.
+  function pageIndexForOffset(pages, offset, preferred) {
+    const containing = [];
+    pages.forEach((page, index) => {
+      if (page.start <= offset && offset <= page.end) containing.push(index);
+    });
+    if (containing.includes(preferred)) return preferred;
+    if (containing.length) return containing[0];
+    let index = 0;
+    pages.forEach((page, i) => { if (page.end < offset) index = i; });
+    return index;
+  }
+
+  // ---- Where the caret was, per leaf ----------------------------------------
+
+  const caretMemory = new Map();
+  const freshLeafSeparators = new Map(); // entryId -> content length right after an added separator
+
+  function rememberCaret() {
+    const entry = activeEntry();
+    if (!entry || !circEditor.hasFocus() || currentView !== "writing") return;
+    caretMemory.set(`${entry.id}:${currentPageIndex}`, displayedPageStart + el.circInput.selectionStart);
+  }
+
+  function rememberedCaret(pageIndex, page) {
+    const entry = activeEntry();
+    const offset = entry ? caretMemory.get(`${entry.id}:${pageIndex}`) : undefined;
+    if (!Number.isInteger(offset) || !page) return null;
+    if (offset >= page.start && offset <= page.end) return offset;
+    // Words that overflowed since carry the remembered spot just past this
+    // leaf's end; it still belongs here, at the end.
+    const next = pagesFor(entry)[pageIndex + 1];
+    if (offset > page.end && (!next || offset <= next.end)) return page.end;
+    return null;
+  }
+
+  // Put the caret at an absolute offset on the leaf being shown.
+  function placeCaret(offset) {
+    const local = Math.max(0, Math.min(offset - displayedPageStart, displayedPageEnd - displayedPageStart));
+    circEditor.focusOffset(local);
+  }
+
+  // A fresh, empty leaf invites writing; a written leaf waits for a click so
+  // no caret blinks over words that are only being read.
+  function settleFocus(page) {
+    if (!page.text.trim()) placeCaret(page.start);
+    else if (circEditor.hasFocus()) el.circField.focus({ preventScroll: true });
+  }
+
+
+  // options.caret: an absolute offset to keep the caret at if the leaf's DOM
+  // had to be rebuilt (overflow, flow-back, repagination). The browser's own
+  // caret is never touched when the leaf did not change.
+  function renderEntry(options = {}) {
     const entry = activeEntry();
     if (!entry) return;
     const pages = pagesFor(entry);
@@ -887,17 +1108,26 @@
     displayedPageEnd = page.end;
     const directInk = store.settings.inkEffect === "none";
     el.circProjection.innerHTML = directInk ? "" : projectionMarkup(entry, page);
-    if (el.circInput.value !== page.text) el.circInput.value = page.text;
+    const hadFocus = circEditor.hasFocus();
+    const replaced = el.circInput.value !== page.text;
+    if (replaced) el.circInput.value = page.text;
+    if (Number.isInteger(options.caret) && (replaced || options.forceCaret) && (hadFocus || options.focus)) {
+      placeCaret(options.caret);
+    }
     el.circProjection.style.setProperty("--circ-blur", `${store.settings.blurPx}px`);
     el.circProjection.style.setProperty("--circ-settle", `${store.settings.revealDurationMs}ms`);
     const living = currentPageIndex === pages.length - 1;
     const reading = mode === "reading";
+    const blankLeaf = !page.text.trim();
     el.circModeLabel.textContent = mode === "revision" ? "Revision" : living ? "Living Page" : "Earlier Leaf";
     el.circField.classList.toggle("is-revision", mode === "revision");
     el.circListening.classList.toggle("is-quiet", Boolean(page.text) || mode === "revision");
     el.circLeafPosition.textContent = living ? `Living Page · ${pages.length}` : `Leaf ${currentPageIndex + 1} of ${pages.length}`;
     el.circPrevLeaf.disabled = currentPageIndex === 0;
-    el.circNextLeaf.disabled = living;
+    // From a written living page, the arrow turns to a fresh leaf; only an
+    // empty leaf has nothing beyond it.
+    el.circNextLeaf.disabled = living && blankLeaf;
+    el.circNextLeaf.setAttribute("aria-label", living ? "Turn to a fresh leaf" : "Next leaf");
     el.circRevise.hidden = true;
     el.circDeleteLeaf.hidden = mode === "revision";
     el.circDeleteLeaf.disabled = page.start === page.end;
@@ -953,7 +1183,121 @@
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
       turnLeaf();
+      return;
     }
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || composing) return;
+    if (mode === "revision") return;
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !selection.isCollapsed) return;
+    const offset = el.circInput.selectionStart;
+    const length = el.circInput.value.length;
+    const pages = pagesFor(activeEntry());
+    const hasNext = currentPageIndex < pages.length - 1;
+    const hasPrevious = currentPageIndex > 0;
+
+    // Backspace at the very start of a leaf reaches back across the seam;
+    // Delete at the very end reaches forward. The leaves read as one text.
+    if (event.key === "Backspace" && offset === 0 && hasPrevious) {
+      event.preventDefault();
+      joinAcrossSeam(-1);
+      return;
+    }
+    if (event.key === "Delete" && offset === length && hasNext) {
+      event.preventDefault();
+      joinAcrossSeam(1);
+      return;
+    }
+    if (event.shiftKey) return;
+    // Arrow keys walk off the edge of a leaf onto the next one. Let the
+    // browser move first; only if the caret could not move is it at an edge.
+    const forward = event.key === "ArrowRight" || event.key === "ArrowDown";
+    const backward = event.key === "ArrowLeft" || event.key === "ArrowUp";
+    if (!(forward && hasNext && offset === length) && !(backward && hasPrevious && offset === 0)) {
+      if (forward || backward) {
+        const before = offset;
+        requestAnimationFrame(() => {
+          if (!circEditor.hasFocus() || el.circInput.selectionStart !== before) return;
+          if (forward && before === el.circInput.value.length && hasNext) crossLeaf(1);
+          if (backward && before === 0 && hasPrevious) crossLeaf(-1);
+        });
+      }
+      return;
+    }
+    event.preventDefault();
+    crossLeaf(forward ? 1 : -1);
+  }
+
+  // Move the caret onto the neighbouring leaf: its start going forward, its
+  // end going back — exactly where the text continues.
+  function crossLeaf(delta) {
+    const entry = activeEntry();
+    if (!entry) return;
+    const pages = pagesFor(entry);
+    const next = currentPageIndex + delta;
+    if (next < 0 || next >= pages.length) return;
+    currentPageIndex = next;
+    mode = next === pages.length - 1 ? "writing" : "reading";
+    entry.lastViewedAnchor = pages[next].start;
+    renderEntry();
+    placeCaret(delta > 0 ? pages[next].start : pages[next].end);
+    rememberCaret();
+    bridge?.updateContext?.({ entryId: entry.id, mode, meaningful: false });
+  }
+
+  // Remove what separates this leaf from its neighbour: a manual break, the
+  // space or blank line between them, or else one character.
+  function joinAcrossSeam(direction) {
+    const entry = activeEntry();
+    if (!entry) return;
+    const pages = pagesFor(entry);
+    const page = pages[currentPageIndex];
+    const neighbour = pages[currentPageIndex + direction];
+    if (!neighbour) return;
+    const seamStart = direction < 0 ? neighbour.end : page.end;
+    const seamEnd = direction < 0 ? page.start : neighbour.start;
+    const breakAt = direction < 0 ? page.start : neighbour.start;
+    let caret = direction < 0 ? seamStart : page.end;
+    if (entry.manualPageBreaks.includes(breakAt)) {
+      // A turned leaf joins back first; the paragraph break stays, and a
+      // second Backspace merges paragraphs the ordinary way.
+      caret = direction < 0 ? page.start : page.end;
+      entry.manualPageBreaks = entry.manualPageBreaks.filter((offset) => offset !== breakAt);
+      entry.updatedAt = now();
+      changedInVisit = true;
+      markStoreDirty();
+    } else if (seamStart < seamEnd) {
+      replaceContent(seamStart, seamEnd, "");
+    } else if (direction < 0 && page.start > 0) {
+      replaceContent(page.start - 1, page.start, "");
+      caret = page.start - 1;
+    } else if (direction > 0 && page.end < entry.content.length) {
+      replaceContent(page.end, page.end + 1, "");
+    }
+    const nextPages = pagesFor(entry);
+    currentPageIndex = pageIndexForOffset(nextPages, caret, currentPageIndex + Math.min(0, direction));
+    mode = currentPageIndex === nextPages.length - 1 ? "writing" : "reading";
+    renderEntry({ caret, forceCaret: true, focus: true });
+    rememberCaret();
+  }
+
+  function replaceContent(start, end, text) {
+    const entry = activeEntry();
+    const before = entry.content;
+    const incoming = before.slice(0, start) + text + before.slice(end);
+    const edit = changedRange(before, incoming);
+    entry.content = incoming;
+    entry.manualPageBreaks = offsetsAfterEdit(entry.manualPageBreaks, edit, incoming.length);
+    entry.settledUntil = incoming.length;
+    entry.lastMeaningfulAnchor = Math.min(start + text.length, incoming.length);
+    entry.lastViewedAnchor = entry.lastMeaningfulAnchor;
+    entry.updatedAt = now();
+    changedInVisit = true;
+    recordAudit("INPUT_ACCEPTED", {
+      sourceState: "LISTENING", destinationState: "COMPOSING",
+      metadata: { inputType: text ? "insertText" : "deleteContentBackward", inputLength: incoming.length },
+    });
+    bridge?.updateContext?.({ entryId: entry.id, action: "input-accepted", mode, meaningful: true });
+    markStoreDirty();
   }
 
   function handleGlobalKeydown(event) {
@@ -975,6 +1319,21 @@
     if (currentView !== "writing" || mode === "revision") return;
     if (event.key === "PageUp") { event.preventDefault(); moveLeaf(-1); return; }
     if (event.key === "PageDown") { event.preventDefault(); moveLeaf(1); return; }
+    // Typing with no caret placed begins where the writer last was on this
+    // leaf (or at its end) — the keystroke itself then lands there.
+    if (
+      store.settings.inkEffect === "none" &&
+      isTextKey(event) &&
+      !circEditor.hasFocus() &&
+      !(event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']"))
+    ) {
+      const entry = activeEntry();
+      if (!entry) return;
+      const page = pagesFor(entry)[currentPageIndex];
+      const remembered = rememberedCaret(currentPageIndex, page);
+      placeCaret(remembered !== null ? remembered : page.end);
+      return;
+    }
     if (mode === "reading" && store.settings.inkEffect !== "none" && isTextKey(event)) {
       event.preventDefault();
       const entry = activeEntry();
@@ -996,21 +1355,76 @@
   function moveLeaf(delta) {
     const entry = activeEntry();
     if (!entry || mode === "revision") return;
-    const pages = pagesFor(entry);
+    const wasWriting = circEditor.hasFocus();
+    let pages = pagesFor(entry);
+    const living = currentPageIndex === pages.length - 1;
+    if (delta > 0 && living) {
+      openFreshLeaf();
+      return;
+    }
     const next = Math.max(0, Math.min(pages.length - 1, currentPageIndex + delta));
     if (next === currentPageIndex) return;
     hideDeleteConfirmation();
-    currentPageIndex = next;
-    mode = next === pages.length - 1 ? "writing" : "reading";
-    entry.lastViewedAnchor = pages[next].start;
+    // Leaving an untouched fresh leaf folds it away again: no blank leaves
+    // are left behind at the end of an entry.
+    const leaving = pages[currentPageIndex];
+    if (living && !leaving.text.trim() && entry.manualPageBreaks.includes(leaving.start) && leaving.start === entry.content.length) {
+      entry.manualPageBreaks = entry.manualPageBreaks.filter((offset) => offset !== leaving.start);
+      if (freshLeafSeparators.get(entry.id) === entry.content.length && entry.content.endsWith("\n\n")) {
+        entry.content = entry.content.slice(0, -2);
+        entry.settledUntil = Math.min(entry.settledUntil, entry.content.length);
+        entry.lastMeaningfulAnchor = Math.min(entry.lastMeaningfulAnchor, entry.content.length);
+        entry.lastViewedAnchor = Math.min(entry.lastViewedAnchor, entry.content.length);
+        entry.manualPageBreaks = entry.manualPageBreaks.filter((offset) => offset <= entry.content.length);
+      }
+      freshLeafSeparators.delete(entry.id);
+      markStoreDirty();
+      pages = pagesFor(entry);
+    }
+    currentPageIndex = Math.min(next, pages.length - 1);
+    mode = currentPageIndex === pages.length - 1 ? "writing" : "reading";
+    entry.lastViewedAnchor = pages[currentPageIndex].start;
     animateLeafChange(false);
     renderEntry();
     bridge?.updateContext?.({ entryId: entry.id, mode, meaningful: false });
-    if (store.settings.inkEffect === "none") {
-      const targetPage = pagesFor(entry)[currentPageIndex];
-      focusDirectOffset(targetPage?.start || 0);
-    } else if (mode === "writing") focusAppend();
-    else el.circInput.focus({ preventScroll: true });
+    // Return to where the caret last was on this leaf; never park it at the top.
+    const page = pages[currentPageIndex];
+    const remembered = rememberedCaret(currentPageIndex, page);
+    if (wasWriting && remembered !== null) placeCaret(remembered);
+    else if (wasWriting) settleFocus(page);
+  }
+
+  // The arrow beyond a written living page: a new, empty leaf at the end.
+  function openFreshLeaf() {
+    const entry = activeEntry();
+    if (!entry || !entry.content.trim()) return;
+    const pages = pagesFor(entry);
+    if (!pages[pages.length - 1].text.trim()) return;
+    // A leaf break is also a paragraph break, so words on either side never
+    // run together in the stored text (search, counts, excerpts).
+    if (!entry.content.endsWith("\n\n")) {
+      entry.content += entry.content.endsWith("\n") ? "\n" : "\n\n";
+      freshLeafSeparators.set(entry.id, entry.content.length);
+    }
+    const breakOffset = entry.content.length;
+    if (!entry.manualPageBreaks.includes(breakOffset)) {
+      entry.manualPageBreaks.push(breakOffset);
+      entry.manualPageBreaks.sort((a, b) => a - b);
+    }
+    entry.settledUntil = entry.content.length;
+    entry.updatedAt = now();
+    changedInVisit = true;
+    recordAudit("MANUAL_PAGE_BREAK_CREATED", {
+      destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: false, breakOffset },
+    });
+    const nextPages = pagesFor(entry);
+    currentPageIndex = nextPages.length - 1;
+    mode = "writing";
+    hideDeleteConfirmation();
+    animateLeafChange(false);
+    renderEntry();
+    markStoreDirty();
+    placeCaret(nextPages[currentPageIndex].start);
   }
 
   function animateLeafChange(automatic) {
@@ -1030,22 +1444,34 @@
 
   function turnLeaf() {
     const entry = activeEntry();
-    if (!entry || mode !== "writing") return;
+    const directInk = store.settings.inkEffect === "none";
+    if (!entry || (mode !== "writing" && !(directInk && mode === "reading"))) return;
     hideDeleteConfirmation();
-    const selectedOffset = Number(el.circInput.selectionStart);
-    const breakOffset = Math.max(
+    const selectedOffset = circEditor.hasFocus() ? Number(el.circInput.selectionStart) : NaN;
+    let breakOffset = Math.max(
       0,
       Math.min(
         displayedPageStart + (Number.isFinite(selectedOffset) ? selectedOffset : el.circInput.value.length),
         entry.content.length
       )
     );
+    // The new leaf begins a new paragraph: words either side of the turn are
+    // kept apart in the stored text, never run together.
+    if (breakOffset > 0 && breakOffset < entry.content.length || (breakOffset > 0 && breakOffset === entry.content.length && !entry.content.endsWith("\n\n"))) {
+      const before = entry.content.slice(0, breakOffset);
+      const spaces = (entry.content.slice(breakOffset).match(/^[ \t]+/) || [""])[0].length;
+      const separator = before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+      if (separator || spaces) {
+        replaceContent(breakOffset, breakOffset + spaces, separator);
+        breakOffset += separator.length;
+      }
+    }
     if (!entry.manualPageBreaks.includes(breakOffset)) {
       entry.manualPageBreaks.push(breakOffset);
       entry.manualPageBreaks.sort((a, b) => a - b);
     }
     entry.updatedAt = now();
-    entry.lastMeaningfulAnchor = entry.content.length;
+    entry.lastMeaningfulAnchor = breakOffset;
     changedInVisit = true;
     recordAudit("MANUAL_PAGE_BREAK_CREATED", {
       destinationState: "NEXT_PAGE_PREPARED", metadata: { automatic: false, breakOffset },
@@ -1116,11 +1542,7 @@
     renderEntry();
     markStoreDirty(true);
     el.circLive.textContent = "Leaf deleted.";
-    if (store.settings.inkEffect === "none") {
-      const targetPage = pagesFor(entry)[currentPageIndex];
-      focusDirectOffset(targetPage?.start || 0);
-    } else if (mode === "writing") focusAppend();
-    else el.circInput.focus({ preventScroll: true });
+    settleFocus(pagesFor(entry)[currentPageIndex]);
   }
 
   function offsetAfterDeletion(offset, start, end) {
@@ -1339,9 +1761,17 @@
   }
 
   function handlePageHide() {
-    const entry = activeEntry();
-    if (entry) entry.lastMeaningfulAnchor = entry.content.length;
     writeMirror();
+    // A last write that outlives the tab, when there is something unsaved and
+    // it fits the browser's keepalive budget. The mirror is the safety net.
+    if (!pendingSave() || !serverReconciled) return;
+    const body = JSON.stringify(store);
+    if (body.length > 60_000) return;
+    try {
+      fetch("/api/circumspection", {
+        method: "PUT", headers: { "content-type": "application/json" }, body, keepalive: true,
+      }).catch(() => {});
+    } catch { /* the mirror already holds it */ }
   }
 
   let resizeTimer = null;

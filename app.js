@@ -62,6 +62,11 @@ let inlineNotesEditor = null;
 const undoByThread = new Map();
 const navigationTrail = [];
 let utilitySurface = null;
+let retrospectPreviewId = null; // a completed knot being read in the retrospect view
+let journeyOpenTaskId = null; // task whose Web Journey accordion is open (transient)
+let journeyEditingTrailId = null; // trail label currently being renamed inline
+let journeyCardHideTimer = null;
+let loadedThreadStamp = null; // updatedAt of the open thread as last read or written
 
 let appSettings = defaultSettings();
 let noteLabelRegex = null;
@@ -92,6 +97,11 @@ const elements = {
   focusAttachments: document.getElementById("focusAttachments"),
   focusEditButton: document.getElementById("focusEditButton"),
   focusDoneButton: document.getElementById("focusDoneButton"),
+  focusJourneyButton: document.getElementById("focusJourneyButton"),
+  focusLabel: document.getElementById("focusLabel"),
+  focusCard: document.querySelector(".focus-card"),
+  focusRestoreButton: document.getElementById("focusRestoreButton"),
+  focusJourney: document.getElementById("focusJourney"),
   focusArchiveButton: document.getElementById("focusArchiveButton"),
   retrospectButton: document.getElementById("retrospectButton"),
   focusEditor: document.getElementById("focusEditor"),
@@ -265,6 +275,9 @@ function hydrate(thread) {
   editingImages = [];
   normalizeFocus();
   isDirty = false;
+  loadedThreadStamp = typeof thread.updatedAt === "string" ? thread.updatedAt : null;
+  if (!state.tasks.some((task) => task.id === journeyOpenTaskId)) journeyOpenTaskId = null;
+  journeyEditingTrailId = null;
 }
 
 function emptyStateObject() {
@@ -445,7 +458,50 @@ function normalizeTask(task, fallbackCreatedAt = null) {
             alt: typeof img.alt === "string" ? img.alt : "",
           }))
       : [],
+    deepLinks: normalizeDeepLinks(t.deepLinks),
   };
+}
+
+// Web Journey trails captured by the browser extension. Every field is
+// optional on the way in and predictable on the way out, so a hand-edited or
+// half-written trail still renders instead of breaking the focus card.
+function normalizeDeepLinks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const str = (value) => (typeof value === "string" ? value : "");
+  return raw
+    .filter((dl) => dl && typeof dl === "object" && Array.isArray(dl.nodes))
+    .map((dl) => {
+      const nodes = dl.nodes
+        .filter((n) => n && typeof n.url === "string")
+        .map((n) => ({
+          url: n.url,
+          title: str(n.title),
+          type: typeof n.type === "string" && n.type ? n.type : "link",
+          referrer: str(n.referrer),
+          snippet: str(n.snippet),
+          metaDescription: str(n.metaDescription),
+          ogTitle: str(n.ogTitle),
+          ogDescription: str(n.ogDescription),
+          ogImage: str(n.ogImage),
+          // A small thumbnail the extension inlines at capture time, so the
+          // hover card never has to fetch anything from the open web.
+          ogImageData:
+            typeof n.ogImageData === "string" && /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(n.ogImageData)
+              ? n.ogImageData
+              : "",
+          firstH1: str(n.firstH1),
+          visitedAt: str(n.visitedAt),
+        }));
+      const anchor = Number.isInteger(dl.anchorIndex) ? dl.anchorIndex : 0;
+      return {
+        id: typeof dl.id === "string" && dl.id ? dl.id : crypto.randomUUID(),
+        label: str(dl.label),
+        userNote: str(dl.userNote),
+        capturedAt: typeof dl.capturedAt === "string" ? dl.capturedAt : new Date().toISOString(),
+        anchorIndex: nodes.length ? clamp(anchor, 0, nodes.length - 1) : 0,
+        nodes,
+      };
+    });
 }
 
 // ---- Focus semantics over completed knots ---------------------------------
@@ -484,7 +540,15 @@ function normalizeFocus() {
 function setFocusByTaskId(taskId) {
   const index = state.tasks.findIndex((task) => task.id === taskId);
   if (index < 0 || state.tasks[index].done) return;
-  if (index === state.focusIndex) return;
+  const wasPreviewing = Boolean(retrospectPreviewId);
+  retrospectPreviewId = null; // choosing an open knot ends any reading of a done one
+  if (index === state.focusIndex) {
+    if (wasPreviewing) {
+      renderLine();
+      renderLineThread();
+    }
+    return;
+  }
   state.focusIndex = index;
   markOuterMeaningful("focus-task");
   renderLine();
@@ -532,6 +596,11 @@ function restoreTask(taskId) {
   task.done = false;
   task.completedAt = null;
   task.updatedAt = new Date().toISOString();
+  // Returning the knot being read makes it the one to do now.
+  if (retrospectPreviewId === taskId) {
+    state.focusIndex = state.tasks.indexOf(task);
+    retrospectPreviewId = null;
+  }
   normalizeFocus();
   markOuterMeaningful("restore-task");
   render();
@@ -605,6 +674,7 @@ function handleAssistedShortcut(event) {
 
 function toggleRetrospect() {
   retrospectOn = !retrospectOn;
+  retrospectPreviewId = null;
   untangleToken += 1; // cancel any in-flight svg animation
   render();
   if (retrospectOn) playRetrospect();
@@ -631,6 +701,7 @@ function bindEvents() {
   if (elements.taskNotes) {
     captureNotesEditor = bindMarkShortcuts(elements.taskNotes, {
       onPaste: (event) => handleImagePaste(event, captureImages, renderCaptureAttachments),
+      images: () => captureImages,
     });
   }
   if (elements.focusNextButton) {
@@ -643,6 +714,11 @@ function bindEvents() {
 
   if (elements.focusDoneButton) {
     elements.focusDoneButton.addEventListener("click", completeFocusedTask);
+  }
+  if (elements.focusRestoreButton) {
+    elements.focusRestoreButton.addEventListener("click", () => {
+      if (retrospectPreviewId) restoreTask(retrospectPreviewId);
+    });
   }
   if (elements.retrospectButton) {
     elements.retrospectButton.addEventListener("click", toggleRetrospect);
@@ -675,15 +751,17 @@ function bindEvents() {
         return;
       }
       const item = event.target.closest(".linear-item[data-task-id]");
-      if (!item || item.classList.contains("is-done")) return;
-      setFocusByTaskId(item.dataset.taskId);
+      if (!item) return;
+      if (item.classList.contains("is-done")) previewDoneTask(item.dataset.taskId);
+      else setFocusByTaskId(item.dataset.taskId);
     });
     elements.linearList.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       const item = event.target.closest(".linear-item[data-task-id]");
-      if (!item || item.classList.contains("is-done")) return;
+      if (!item || event.target.closest("[data-restore-task]")) return;
       event.preventDefault();
-      setFocusByTaskId(item.dataset.taskId);
+      if (item.classList.contains("is-done")) previewDoneTask(item.dataset.taskId);
+      else setFocusByTaskId(item.dataset.taskId);
     });
   }
 
@@ -691,7 +769,10 @@ function bindEvents() {
     // The dots on the thread are jump points, same as the rail cards.
     elements.lineSvg.addEventListener("click", (event) => {
       const dot = event.target.closest("[data-task-id]");
-      if (dot) setFocusByTaskId(dot.dataset.taskId);
+      if (!dot) return;
+      const task = state.tasks.find((entry) => entry.id === dot.dataset.taskId);
+      if (task?.done) previewDoneTask(task.id);
+      else setFocusByTaskId(dot.dataset.taskId);
     });
   }
 
@@ -738,6 +819,21 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !target.isConnected) return;
+    const play = target.closest("[data-yt-play]");
+    if (play && !target.closest("[contenteditable='true']")) {
+      event.preventDefault();
+      playYoutube(play);
+      return;
+    }
+    const imageButton = target.closest("[data-view-image], [data-image-ref]");
+    if (imageButton && !target.closest("[contenteditable='true']")) {
+      event.preventDefault();
+      const id = imageButton.dataset.viewImage || imageButton.dataset.imageRef;
+      const images = imagesForReference(id);
+      if (images) openImageViewer(images, id);
+      else setStatus("That image is no longer attached");
+      return;
+    }
     const threadReference = target.closest("[data-thread-ref]");
     if (threadReference && !target.closest("[contenteditable='true']")) {
       event.preventDefault();
@@ -762,7 +858,8 @@ function bindEvents() {
       if (prefsOpen) closePrefsPanel();
     }
     const typing =
-      event.target.closest("input, textarea, select, [contenteditable='true']") ||
+      (event.target instanceof Element &&
+        event.target.closest("input, textarea, select, [contenteditable='true']")) ||
       editingTaskId !== null;
     const wantsFind =
       (event.key === "/" && !typing) ||
@@ -814,11 +911,15 @@ function bindEvents() {
 
   bindPlanDrag();
 
+  bindWebJourney();
+
   window.addEventListener("resize", renderVisuals);
   window.addEventListener("beforeunload", flushPersistOnUnload);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushPersistOnUnload();
+    else refreshFromDiskIfChanged();
   });
+  window.addEventListener("focus", refreshFromDiskIfChanged);
 }
 
 function handleAddTask(event) {
@@ -1314,6 +1415,7 @@ async function flushPersistImmediate() {
   try {
     const saved = await storage.saveThread(thread);
     isDirty = false;
+    if (saved && typeof saved.updatedAt === "string") loadedThreadStamp = saved.updatedAt;
     if (isOffline) {
       isOffline = false;
     }
@@ -1354,7 +1456,21 @@ function flushPersistOnUnload() {
       headers: { "content-type": "application/json" },
       body,
       keepalive: true,
-    }).catch(() => {});
+    })
+      .then(async (res) => {
+        // A tab that was only hidden (not closed) is still alive to hear back.
+        // If nothing changed since this body was sent, the file now matches
+        // the screen — mark it clean so a later return can pick up captures
+        // the browser extension writes meanwhile.
+        if (!res.ok) return;
+        const saved = await res.json();
+        const now = JSON.stringify({ name: state.threadName, state: serializeThreadState() });
+        if (now === body && !persistTimer) {
+          isDirty = false;
+          if (saved && typeof saved.updatedAt === "string") loadedThreadStamp = saved.updatedAt;
+        }
+      })
+      .catch(() => {});
   } catch {
     // ignore — the localStorage mirror above is the safety net.
   }
@@ -1433,9 +1549,17 @@ function render() {
 function renderStepState() {
   const activeStep = state.currentStep || DEFAULT_STEP;
 
+  // Knots behind the current step are filled, the current one is ringed:
+  // progress is carried by the shape of the thread, not by a counter.
+  const activeIndex = steps.indexOf(activeStep);
   elements.stepButtons.forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.stepTarget === activeStep);
+    const index = steps.indexOf(button.dataset.stepTarget);
+    button.classList.toggle("is-active", index === activeIndex);
+    button.classList.toggle("is-done", index < activeIndex);
+    if (index === activeIndex) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
   });
+  document.querySelector(".stepper")?.style.setProperty("--step-progress", String(Math.max(0, activeIndex) / (steps.length - 1)));
 
   elements.panels.forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.step === activeStep);
@@ -1469,7 +1593,7 @@ function renderTaskPreview() {
       return `
         <article class="task-chip">
           <div class="task-chip-head">
-            <strong>${escapeHtml(task.title)}</strong>
+            <strong>${expandHtml(task.title)}</strong>
             <button class="ghost-button mini-edit" type="button" data-edit-task="${task.id}">Edit</button>
           </div>
           <p>${linkify(summarizeTask(task))}</p>
@@ -1557,7 +1681,7 @@ function renderPlanningList() {
           <button class="drag-handle" type="button" tabindex="-1" aria-hidden="true"></button>
           <div class="plan-item-head">
             <div>
-              <strong>${index + 1}. ${escapeHtml(task.title)}</strong>
+              <strong>${index + 1}. ${expandHtml(task.title)}</strong>
               <p>${linkify(summarizeTask(task))}</p>
               ${renderThumbStrip(task.images)}
             </div>
@@ -1709,10 +1833,22 @@ function renderLine() {
   const doneCount = all.length - visible.length;
   const allDone = all.length > 0 && visible.length === 0;
   const focused = all[state.focusIndex];
-  const currentTask = focused && !focused.done ? focused : null;
-  const editingHere = !!(currentTask && editingTaskId === currentTask.id && state.currentStep === "line");
+  const preview = retrospectPreviewTask();
+  if (!preview) retrospectPreviewId = null;
+  const currentTask = preview || (focused && !focused.done ? focused : null);
+  const editingHere = !!(!preview && currentTask && editingTaskId === currentTask.id && state.currentStep === "line");
+  if (elements.focusLabel) {
+    elements.focusLabel.textContent = preview
+      ? `Done${preview.completedAt ? ` · ${formatTime(preview.completedAt)}` : ""}`
+      : "Do this now";
+  }
+  elements.focusCard?.classList.toggle("is-preview", Boolean(preview));
+  if (elements.focusRestoreButton) elements.focusRestoreButton.hidden = !preview;
   if (elements.lineStepLabel) {
-    elements.lineStepLabel.textContent = currentTask ? `Step ${state.focusIndex + 1}` : "Sequence";
+    // Count the way the rail and the thread count: completed knots only
+    // take a number while retrospect shows them.
+    const index = currentTask ? (retrospectOn ? all : visible).indexOf(currentTask) : -1;
+    elements.lineStepLabel.textContent = index >= 0 ? `Step ${index + 1}` : "Sequence";
   }
 
   // The editor renders in place of the read-only "Do this now" content.
@@ -1734,8 +1870,9 @@ function renderLine() {
   }
 
   const showTaskActions = !!currentTask && !editingHere;
-  if (elements.focusEditButton) elements.focusEditButton.hidden = !showTaskActions;
-  if (elements.focusDoneButton) elements.focusDoneButton.hidden = !showTaskActions;
+  if (elements.focusEditButton) elements.focusEditButton.hidden = !showTaskActions || Boolean(preview);
+  if (elements.focusDoneButton) elements.focusDoneButton.hidden = !showTaskActions || Boolean(preview);
+  renderWebJourneyEntry(currentTask, showTaskActions);
 
   if (editingHere) {
     // read view hidden; the editor carries the card
@@ -1743,19 +1880,20 @@ function renderLine() {
     elements.focusTitle.textContent = "This thread is empty";
     elements.focusNotes.innerHTML =
       '<span class="focus-notes-empty">Gather a few thoughts in Step 1 first.</span>';
-  } else if (allDone) {
+  } else if (allDone && !preview) {
     elements.focusTitle.textContent = "The thread is clear.";
     elements.focusNotes.innerHTML =
       '<span class="focus-notes-empty">Every knot on this thread is loose.</span>';
   } else if (currentTask) {
-    elements.focusTitle.textContent = currentTask.title;
+    elements.focusTitle.innerHTML = expandHtml(currentTask.title);
     elements.focusNotes.innerHTML = currentTask.notes
       ? renderRichNotes(currentTask.notes)
       : '<span class="focus-notes-empty">No extra notes. Just begin.</span>';
   }
   renderReadonlyTray(elements.focusAttachments, currentTask && !editingHere ? currentTask.images : []);
 
-  const visiblePos = currentTask ? visible.findIndex((task) => task.id === currentTask.id) : -1;
+  const navTask = focused && !focused.done ? focused : null;
+  const visiblePos = navTask ? visible.findIndex((task) => task.id === navTask.id) : -1;
   if (elements.focusPrevButton) {
     elements.focusPrevButton.disabled = visiblePos <= 0;
   }
@@ -1779,16 +1917,19 @@ function renderLine() {
     .map((task, index) => {
       if (task.done) {
         const when = task.completedAt ? ` · ${formatTime(task.completedAt)}` : "";
+        const isPreview = preview && preview.id === task.id;
         return `
-          <article class="linear-item is-done" data-task-id="${task.id}">
+          <article class="linear-item is-done ${isPreview ? "is-previewing" : ""}" data-task-id="${task.id}"
+            role="button" tabindex="0" aria-pressed="${isPreview ? "true" : "false"}"
+            aria-label="Read ${escapeHtml(task.title)}, done">
             <div class="linear-item-index">Step ${index + 1}</div>
-            <strong>${escapeHtml(task.title)}</strong>
+            <strong>${expandHtml(task.title)}</strong>
             <p>done${escapeHtml(when)}</p>
             <button class="ghost-button mini-edit linear-restore" type="button" data-restore-task="${task.id}">Return to thread</button>
           </article>
         `;
       }
-      const isCurrent = currentTask && task.id === currentTask.id;
+      const isCurrent = !preview && currentTask && task.id === currentTask.id;
       return `
         <article class="linear-item ${isCurrent ? "is-current" : "is-muted"}"
           data-task-id="${task.id}"
@@ -1796,12 +1937,554 @@ function renderLine() {
           tabindex="0"
           ${isCurrent ? 'aria-current="step"' : ""}>
           <div class="linear-item-index">Step ${index + 1}</div>
-          <strong>${escapeHtml(task.title)}</strong>
+          <strong>${expandHtml(task.title)}</strong>
           <p>${escapeHtml(lineCardSubtitle(task))}</p>
         </article>
       `;
     })
     .join("");
+}
+
+// ---- Web Journey ------------------------------------------------------------
+//
+// Trails captured by the browser extension (see extension/ and engineering.md).
+// Invisible unless the focused task holds at least one trail; then a quiet
+// "✦ Web journey" text button opens an accordion of flowing threads, one per
+// trail, newest first. Nothing here moves for attention: the panel arrives,
+// the hover card fades, and that is all.
+
+const JOURNEY_NODE_GAP = 56; // vertical rhythm between visits
+const JOURNEY_TOP = 18; // room above the first dot (and below the last)
+const JOURNEY_BASE_X = 14; // left edge of the thread inside each svg
+const JOURNEY_LABEL_GAP = 20; // dot-to-title offset
+const JOURNEY_CARD_LINGER_MS = 160; // grace period to travel from dot to card
+const SEARCH_ENGINES = [
+  { host: /(^|\.)google\.[a-z.]+$/i, path: /^\/search/, name: "Google" },
+  { host: /(^|\.)bing\.com$/i, path: /^\/search/, name: "Bing" },
+  { host: /(^|\.)duckduckgo\.com$/i, path: /^\/($|\?)/, name: "DuckDuckGo" },
+  { host: /(^|\.)search\.brave\.com$/i, path: /^\/search/, name: "Brave" },
+  { host: /(^|\.)ecosia\.org$/i, path: /^\/search/, name: "Ecosia" },
+  { host: /(^|\.)kagi\.com$/i, path: /^\/search/, name: "Kagi" },
+];
+
+// "11:34 pm on 26th Jan 2024" — read at a glance, never parsed.
+function prettyTimestamp(isoString) {
+  const d = new Date(isoString);
+  if (!isoString || Number.isNaN(d.getTime())) return "";
+  const h = d.getHours();
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const day = d.getDate();
+  const teen = day % 100 >= 11 && day % 100 <= 13;
+  const suffix = teen ? "th" : { 1: "st", 2: "nd", 3: "rd" }[day % 10] || "th";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${h % 12 || 12}:${mm} ${h >= 12 ? "pm" : "am"} on ${day}${suffix} ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function journeyParseUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function journeySearchInfo(node) {
+  const url = journeyParseUrl(node.url);
+  if (!url) return null;
+  const engine = SEARCH_ENGINES.find((e) => e.host.test(url.hostname) && e.path.test(url.pathname + url.search));
+  const query = url.searchParams.get("q") || url.searchParams.get("query") || "";
+  if (engine && query) return { name: engine.name, query };
+  if (engine || node.type === "search") return { name: engine ? engine.name : "Search", query };
+  return null;
+}
+
+function journeyHost(value) {
+  const url = journeyParseUrl(value);
+  return url ? url.hostname.replace(/^www\./, "") : "";
+}
+
+// The words a person will recognise months later: the search they typed, or
+// the page's own title, falling back through its headline to its address.
+function journeyNodeTitle(node) {
+  const search = journeySearchInfo(node);
+  if (search && search.query) return `${search.name}: ${search.query}`;
+  return node.title || node.ogTitle || node.firstH1 || journeyHost(node.url) || node.url;
+}
+
+function journeyAutoLabel(trail) {
+  const anchor = trail.nodes[trail.anchorIndex] || trail.nodes[trail.nodes.length - 1];
+  return anchor ? truncate(journeyNodeTitle(anchor), 40) : "Web journey";
+}
+
+// Each trail gets its own small, stable sway so stacked trails read as
+// separate rivers rather than one repeated stamp.
+function journeySway(trail) {
+  let hash = 0;
+  for (const ch of trail.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return { amount: 12 + (hash % 9), startRight: hash % 2 === 1 };
+}
+
+function journeyPoints(trail) {
+  const { amount, startRight } = journeySway(trail);
+  return trail.nodes.map((_, index) => {
+    const right = (index % 2 === 1) !== startRight;
+    return { x: JOURNEY_BASE_X + (right ? amount : 0), y: JOURNEY_TOP + index * JOURNEY_NODE_GAP };
+  });
+}
+
+// One unbroken cubic Bézier through every visit. Tangents stay vertical at
+// each dot, so consecutive segments meet smoothly — no corners anywhere.
+function journeyPath(points) {
+  if (!points.length) return "";
+  const first = points[0];
+  if (points.length === 1) {
+    return `M ${first.x} ${first.y - 12} C ${first.x + 6} ${first.y - 4}, ${first.x - 6} ${first.y + 4}, ${first.x} ${first.y + 12}`;
+  }
+  let d = `M ${first.x} ${first.y}`;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const pull = (b.y - a.y) * 0.55;
+    d += ` C ${a.x} ${a.y + pull}, ${b.x} ${b.y - pull}, ${b.x} ${b.y}`;
+  }
+  return d;
+}
+
+// The task the focus card is about: a completed knot being read in the
+// retrospect view, or else the focused open task.
+function focusedOpenTask() {
+  const preview = retrospectPreviewTask();
+  if (preview) return preview;
+  const task = state.tasks[state.focusIndex];
+  return task && !task.done ? task : null;
+}
+
+function retrospectPreviewTask() {
+  if (!retrospectOn || !retrospectPreviewId) return null;
+  return state.tasks.find((task) => task.id === retrospectPreviewId && task.done) || null;
+}
+
+// Reading a completed knot never un-completes it: the focus card shows its
+// contents, marked as done, with "Return to thread" as the only action.
+function previewDoneTask(taskId) {
+  const task = state.tasks.find((entry) => entry.id === taskId);
+  if (!task || !task.done || !retrospectOn) return;
+  retrospectPreviewId = retrospectPreviewId === taskId ? null : taskId;
+  editingTaskId = null;
+  renderLine();
+  renderLineThread();
+}
+
+function findFocusedTrail(trailId) {
+  const task = focusedOpenTask();
+  if (!task || !Array.isArray(task.deepLinks)) return { task, trail: null };
+  return { task, trail: task.deepLinks.find((entry) => entry.id === trailId) || null };
+}
+
+function renderWebJourneyEntry(currentTask, showTaskActions) {
+  const button = elements.focusJourneyButton;
+  const panel = elements.focusJourney;
+  const hasTrails = !!(showTaskActions && currentTask && currentTask.deepLinks && currentTask.deepLinks.length);
+  const open = hasTrails && journeyOpenTaskId === currentTask.id;
+  if (button) {
+    button.hidden = !hasTrails;
+    button.classList.toggle("is-active", open);
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (!panel) return;
+  if (!open) {
+    if (!panel.hidden) {
+      panel.hidden = true;
+      panel.innerHTML = "";
+      hideJourneyCard(true);
+    }
+    return;
+  }
+  const wasHidden = panel.hidden;
+  panel.hidden = false; // unhide first so the renderer can measure its width
+  if (!wasHidden && journeyEditingTrailId) return; // never yank an in-progress rename
+  renderWebJourney(currentTask);
+}
+
+function renderWebJourney(task) {
+  const panel = elements.focusJourney;
+  if (!panel || !task) return;
+  hideJourneyCard(true);
+  const trails = task.deepLinks
+    .slice()
+    .sort((a, b) => (Date.parse(b.capturedAt) || 0) - (Date.parse(a.capturedAt) || 0));
+  // Titles truncate to ~50 characters, fewer on narrow screens so a label
+  // never runs off the card.
+  const width = panel.clientWidth || 560;
+  const maxChars = clamp(Math.floor((width - JOURNEY_BASE_X - 20 - JOURNEY_LABEL_GAP - 16) / 7.4), 18, 50);
+  panel.innerHTML = trails.map((trail) => renderJourneyTrail(trail, maxChars)).join("");
+}
+
+function renderJourneyTrail(trail, maxChars) {
+  const label = trail.label || journeyAutoLabel(trail);
+  const editing = journeyEditingTrailId === trail.id;
+  const when = prettyTimestamp(trail.capturedAt);
+  const note = trail.userNote.trim();
+  const labelHtml = editing
+    ? `<input class="journey-trail-input" type="text" value="${escapeHtml(label)}" maxlength="120"
+         data-journey-label-input="${escapeHtml(trail.id)}" aria-label="Trail label" />`
+    : `<h4 class="journey-trail-label">${escapeHtml(label)}</h4>
+       <button class="journey-trail-edit" type="button" data-journey-rename="${escapeHtml(trail.id)}"
+         aria-label="Rename trail ${escapeHtml(label)}" title="Rename">✎</button>`;
+  return `
+    <section class="journey-trail" data-trail-id="${escapeHtml(trail.id)}" aria-label="Web journey: ${escapeHtml(label)}">
+      <header class="journey-trail-header">
+        ${labelHtml}
+        <button class="journey-trail-remove" type="button" data-journey-remove="${escapeHtml(trail.id)}"
+          aria-label="Remove this trail">
+          <span class="journey-remove-wide">Remove this trail</span><span class="journey-remove-narrow" aria-hidden="true">×</span>
+        </button>
+      </header>
+      ${when ? `<p class="journey-trail-time">captured ${escapeHtml(when)}</p>` : ""}
+      ${renderJourneySvg(trail, maxChars)}
+      ${note ? `<p class="journey-trail-note">“${escapeHtml(note)}”</p>` : ""}
+    </section>`;
+}
+
+function renderJourneySvg(trail, maxChars) {
+  const points = journeyPoints(trail);
+  if (!points.length) return "";
+  const height = JOURNEY_TOP * 2 + (points.length - 1) * JOURNEY_NODE_GAP;
+  // Titles share one left edge (just past the widest sway) — the thread
+  // carries the movement, the words stay still and easy to scan.
+  const labelX = Math.max(...points.map((p) => p.x)) + JOURNEY_LABEL_GAP;
+  const nodes = trail.nodes
+    .map((node, index) => {
+      const p = points[index];
+      const isAnchor = index === trail.anchorIndex;
+      const search = journeySearchInfo(node);
+      const title = journeyNodeTitle(node);
+      const shown = `${search ? "◎ " : ""}${truncate(title, maxChars)}`;
+      const when = prettyTimestamp(node.visitedAt);
+      const spoken = `${title}${when ? `, visited ${when}` : ""}${isAnchor ? ", where this trail was captured" : ""}. Press Enter to open the page.`;
+      return `
+        <g class="journey-node${isAnchor ? " is-anchor" : ""}${index === 0 ? " is-origin" : ""}"
+           data-trail-id="${escapeHtml(trail.id)}" data-node-index="${index}"
+           tabindex="0" role="link" aria-label="${escapeHtml(spoken)}">
+          <circle class="journey-hit" cx="${p.x}" cy="${p.y}" r="16"></circle>
+          <circle class="journey-dot" cx="${p.x}" cy="${p.y}" r="${isAnchor ? 8 : 6}"></circle>
+          <text class="journey-title" x="${labelX}" y="${p.y}" dominant-baseline="central">${escapeHtml(shown)}</text>
+        </g>`;
+    })
+    .join("");
+  return `
+    <svg class="journey-svg" height="${height}" role="group"
+         aria-label="Trail of ${trail.nodes.length} page${trail.nodes.length === 1 ? "" : "s"}">
+      <path class="journey-path" d="${journeyPath(points)}"></path>
+      ${nodes}
+    </svg>`;
+}
+
+// ---- The déjà vu card ---------------------------------------------------------
+
+function journeyCardElement() {
+  let card = document.getElementById("journeyCard");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "journeyCard";
+    card.className = "journey-card";
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", "Page details");
+    card.hidden = true;
+    card.addEventListener("pointerenter", () => clearTimeout(journeyCardHideTimer));
+    card.addEventListener("pointerleave", () => scheduleJourneyCardHide());
+    document.body.appendChild(card);
+  }
+  return card;
+}
+
+function journeyArrivedFrom(trail, index) {
+  const node = trail.nodes[index];
+  if (index > 0) return journeyNodeTitle(trail.nodes[index - 1]);
+  if (node.referrer) {
+    const search = journeySearchInfo({ url: node.referrer, type: "" });
+    return search && search.query ? `${search.name}: ${search.query}` : journeyHost(node.referrer);
+  }
+  return node.type === "typed" ? "an address typed by hand" : "";
+}
+
+function journeyCardContent(trail, index) {
+  const node = trail.nodes[index];
+  const parts = [];
+  parts.push(`<p class="journey-card-title">${escapeHtml(node.ogTitle || node.title || journeyNodeTitle(node))}</p>`);
+  const description = node.ogDescription || node.metaDescription;
+  if (description) parts.push(`<p class="journey-card-desc">${escapeHtml(description)}</p>`);
+  if (node.ogImageData) {
+    parts.push(`<img class="journey-card-image" src="${escapeHtml(node.ogImageData)}" alt="" />`);
+  }
+  const from = journeyArrivedFrom(trail, index);
+  if (from) {
+    parts.push(`<p class="journey-card-meta"><span class="journey-card-kicker">Arrived from</span>${escapeHtml(truncate(from, 80))}</p>`);
+  }
+  if (node.snippet.trim()) {
+    parts.push(`<p class="journey-card-snippet">“${escapeHtml(truncate(node.snippet, 280))}”</p>`);
+  }
+  const when = prettyTimestamp(node.visitedAt);
+  if (when) parts.push(`<p class="journey-card-time">${escapeHtml(when)}</p>`);
+  if (journeyParseUrl(node.url)) {
+    parts.push(
+      `<a class="journey-card-link" href="${escapeHtml(node.url)}" target="_blank" rel="noopener noreferrer">Open page ↗</a>`
+    );
+  }
+  return parts.join("");
+}
+
+function showJourneyCard(nodeEl) {
+  const { trail } = findFocusedTrail(nodeEl.dataset.trailId);
+  const index = Number(nodeEl.dataset.nodeIndex);
+  if (!trail || !trail.nodes[index]) return;
+  clearTimeout(journeyCardHideTimer);
+  const card = journeyCardElement();
+  const key = `${trail.id}:${index}`;
+  if (card.dataset.key !== key || card.hidden) {
+    card.dataset.key = key;
+    card.innerHTML = journeyCardContent(trail, index);
+    card.hidden = false;
+    card.classList.remove("is-visible");
+    positionJourneyCard(card, nodeEl);
+    // Next frame, so the fade starts from transparent rather than snapping in.
+    requestAnimationFrame(() => card.classList.add("is-visible"));
+    const img = card.querySelector("img");
+    if (img && !img.complete) img.addEventListener("load", () => positionJourneyCard(card, nodeEl), { once: true });
+  }
+}
+
+function positionJourneyCard(card, nodeEl) {
+  const gutter = 16;
+  const dot = (nodeEl.querySelector(".journey-dot") || nodeEl).getBoundingClientRect();
+  // Sit past the trail's widest title, so the card never hides a neighbour.
+  const svg = nodeEl.closest("svg");
+  const titles = svg ? [...svg.querySelectorAll(".journey-title")] : [];
+  const textRight = titles.length
+    ? Math.max(...titles.map((title) => title.getBoundingClientRect().right))
+    : nodeEl.getBoundingClientRect().right;
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  const vw = document.documentElement.clientWidth;
+  const vh = window.innerHeight;
+  // Prefer beside the titles; when there is no room, settle just under the dot.
+  let left = textRight + 24;
+  let top = dot.top + dot.height / 2 - 24;
+  if (left + width > vw - gutter) {
+    left = clamp(dot.left - 8, gutter, Math.max(gutter, vw - gutter - width));
+    top = dot.bottom + 12;
+    if (top + height > vh - gutter) top = dot.top - 12 - height;
+  }
+  card.style.left = `${Math.round(left)}px`;
+  card.style.top = `${Math.round(clamp(top, gutter, Math.max(gutter, vh - gutter - height)))}px`;
+}
+
+function scheduleJourneyCardHide() {
+  clearTimeout(journeyCardHideTimer);
+  journeyCardHideTimer = setTimeout(() => hideJourneyCard(false), JOURNEY_CARD_LINGER_MS);
+}
+
+function hideJourneyCard(immediate) {
+  clearTimeout(journeyCardHideTimer);
+  const card = document.getElementById("journeyCard");
+  if (!card || card.hidden) return;
+  card.classList.remove("is-visible");
+  const finish = () => {
+    if (card.classList.contains("is-visible")) return; // re-shown meanwhile
+    card.hidden = true;
+    card.dataset.key = "";
+  };
+  if (immediate || shouldReduceInterfaceMotion()) finish();
+  else journeyCardHideTimer = setTimeout(finish, 180);
+}
+
+// ---- Accordion, rename, remove ----------------------------------------------
+
+function toggleWebJourney() {
+  const task = focusedOpenTask();
+  if (!task || !task.deepLinks || !task.deepLinks.length) return;
+  journeyOpenTaskId = journeyOpenTaskId === task.id ? null : task.id;
+  journeyEditingTrailId = null;
+  renderLine();
+}
+
+function startJourneyRename(trailId) {
+  const { task, trail } = findFocusedTrail(trailId);
+  if (!trail) return;
+  journeyEditingTrailId = trailId;
+  renderWebJourney(task);
+  const input = elements.focusJourney.querySelector("[data-journey-label-input]");
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function finishJourneyRename(input, save) {
+  const trailId = input.dataset.journeyLabelInput;
+  if (journeyEditingTrailId !== trailId) return; // already settled (blur after Enter)
+  journeyEditingTrailId = null;
+  const { task, trail } = findFocusedTrail(trailId);
+  if (!task) return;
+  if (save && trail) {
+    const next = input.value.replace(/\s+/g, " ").trim() || journeyAutoLabel(trail);
+    if (next !== trail.label) {
+      rememberUndo("rename-trail");
+      trail.label = next;
+      task.updatedAt = new Date().toISOString();
+      markOuterMeaningful("rename-trail");
+    }
+  }
+  renderWebJourney(task);
+  const editButton = elements.focusJourney.querySelector(`[data-journey-rename="${CSS.escape(trailId)}"]`);
+  if (editButton) editButton.focus();
+}
+
+function removeJourneyTrail(trailId) {
+  const { task, trail } = findFocusedTrail(trailId);
+  if (!task || !trail) return;
+  rememberUndo("remove-trail");
+  task.deepLinks = task.deepLinks.filter((entry) => entry.id !== trailId);
+  task.updatedAt = new Date().toISOString();
+  if (!task.deepLinks.length) journeyOpenTaskId = null;
+  journeyEditingTrailId = null;
+  hideJourneyCard(true);
+  markOuterMeaningful("remove-trail");
+  renderLine();
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  setStatus(
+    appSettings.keyboardAssistedNavigation === false
+      ? "Trail removed"
+      : `Trail removed · ${isMac ? "⌘Z" : "Ctrl+Z"} brings it back`
+  );
+  const next = task.deepLinks.length
+    ? elements.focusJourney.querySelector(".journey-node")
+    : elements.focusEditButton;
+  if (next && typeof next.focus === "function") next.focus();
+}
+
+function openJourneyNode(nodeEl) {
+  const { trail } = findFocusedTrail(nodeEl.dataset.trailId);
+  const node = trail && trail.nodes[Number(nodeEl.dataset.nodeIndex)];
+  if (node && journeyParseUrl(node.url)) window.open(node.url, "_blank", "noopener,noreferrer");
+}
+
+function bindWebJourney() {
+  const panel = elements.focusJourney;
+  if (elements.focusJourneyButton) {
+    elements.focusJourneyButton.addEventListener("click", toggleWebJourney);
+  }
+  if (!panel) return;
+
+  panel.addEventListener("pointerover", (event) => {
+    if (event.pointerType === "touch") return; // touch uses tap, below
+    const node = event.target.closest(".journey-node");
+    if (node) showJourneyCard(node);
+  });
+  panel.addEventListener("pointerout", (event) => {
+    const node = event.target.closest(".journey-node");
+    if (!node || node.contains(event.relatedTarget)) return;
+    scheduleJourneyCardHide();
+  });
+  panel.addEventListener("focusin", (event) => {
+    const node = event.target.closest(".journey-node");
+    if (node) showJourneyCard(node);
+  });
+  panel.addEventListener("focusout", (event) => {
+    if (event.target.matches("[data-journey-label-input]")) {
+      finishJourneyRename(event.target, true);
+      return;
+    }
+    if (event.target.closest(".journey-node")) scheduleJourneyCardHide();
+  });
+
+  panel.addEventListener("click", (event) => {
+    const rename = event.target.closest("[data-journey-rename]");
+    if (rename) {
+      startJourneyRename(rename.dataset.journeyRename);
+      return;
+    }
+    const remove = event.target.closest("[data-journey-remove]");
+    if (remove) {
+      removeJourneyTrail(remove.dataset.journeyRemove);
+      return;
+    }
+    // A tap shows the card (touch has no hover); the card's link opens the page.
+    const node = event.target.closest(".journey-node");
+    if (node) showJourneyCard(node);
+  });
+
+  panel.addEventListener("keydown", (event) => {
+    const input = event.target.closest("[data-journey-label-input]");
+    if (input) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finishJourneyRename(input, true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finishJourneyRename(input, false);
+      }
+      return;
+    }
+    const node = event.target.closest(".journey-node");
+    if (!node) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openJourneyNode(node);
+    } else if (event.key === "Escape") {
+      hideJourneyCard(false);
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideJourneyCard(false);
+  });
+  window.addEventListener("scroll", () => hideJourneyCard(true), { passive: true, capture: true });
+  window.addEventListener("resize", () => {
+    hideJourneyCard(true);
+    const task = focusedOpenTask();
+    if (task && journeyOpenTaskId === task.id && !journeyEditingTrailId && !panel.hidden) {
+      renderWebJourney(task);
+    }
+  });
+}
+
+// ---- Picking up captures made in the browser --------------------------------
+//
+// The extension writes trails straight into the thread file while the Filum
+// tab sits in the background. When the tab comes back into view with nothing
+// unsaved, re-read the file once if it changed on disk, keeping the user's
+// place (step, focused task, open accordion). With unsaved edits, the local
+// copy wins — the next save is the user's own.
+let journeyRefreshInFlight = false;
+
+async function refreshFromDiskIfChanged() {
+  if (journeyRefreshInFlight || !state.threadId || threadMissing || isOffline) return;
+  if (isDirty || persistTimer || editingTaskId !== null || journeyEditingTrailId) return;
+  journeyRefreshInFlight = true;
+  try {
+    const thread = await storage.loadThread(state.threadId);
+    if (!thread || thread.id !== state.threadId || thread.updatedAt === loadedThreadStamp) return;
+    if (isDirty || persistTimer || editingTaskId !== null || journeyEditingTrailId) return;
+    const focusedId = state.tasks[state.focusIndex] ? state.tasks[state.focusIndex].id : null;
+    const step = state.currentStep;
+    const keepRetrospect = retrospectOn;
+    const keepJourney = journeyOpenTaskId;
+    hydrate(thread);
+    state.currentStep = step;
+    const index = focusedId ? state.tasks.findIndex((task) => task.id === focusedId) : -1;
+    if (index >= 0) state.focusIndex = index;
+    normalizeFocus();
+    retrospectOn = keepRetrospect;
+    if (state.tasks.some((task) => task.id === keepJourney)) journeyOpenTaskId = keepJourney;
+    render();
+  } catch {
+    // Offline or mid-move: stay quiet; the on-screen copy is still good.
+  } finally {
+    journeyRefreshInFlight = false;
+  }
 }
 
 // Shared geometry for the Step 3 thread. The curve loosens as knots complete:
@@ -1828,7 +2511,8 @@ function lineThreadPath(layout) {
 
 function lineThreadDot(task, x, midY, isCurrent) {
   if (task.done) {
-    return `<circle data-task-id="${task.id}" cx="${x}" cy="${midY}" r="6" fill="none" stroke="rgba(22,22,22,0.55)" stroke-width="2" />`;
+    const reading = retrospectPreviewId === task.id;
+    return `<circle data-task-id="${task.id}" class="line-dot" cx="${x}" cy="${midY}" r="${reading ? 9 : 6}" fill="rgba(255,252,246,0.9)" stroke="rgba(22,22,22,${reading ? 0.85 : 0.55})" stroke-width="${reading ? 2.5 : 2}" />`;
   }
   return `<circle data-task-id="${task.id}" class="line-dot" cx="${x}" cy="${midY}" r="${isCurrent ? 10 : 7}" fill="#111111" />`;
 }
@@ -2009,8 +2693,23 @@ function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+// Notes as one plain line for summaries: markup and link syntax read as
+// noise at a glance, so a chip shows what the words say, not how they are
+// written. Abbreviations expand here too.
+function plainNotes(notes) {
+  return expandPlain(
+    String(notes || "")
+      .replace(/@\[([^\]]+)\]\(filum:[a-z]+\/[a-z0-9-]+\)/gi, "@$1")
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)\s]+\)/gi, "$1")
+      .replace(/^```.*$/gm, "")
+      .replace(/^\s*(?:[-*]|\d+\.)\s+/gm, "")
+      .replace(/\*\*|__|`/g, "")
+      .replace(/(^|[^*])\*(?!\s)([^*\n]+)\*/g, "$1$2")
+  );
+}
+
 function summarizeTask(task) {
-  return task.notes ? truncate(task.notes, 140) : "No notes yet";
+  return task.notes ? truncate(plainNotes(task.notes), 140) : "No notes yet";
 }
 
 function clamp(value, min, max) {
@@ -2079,6 +2778,13 @@ function inlineMarkup(raw) {
 
   let work = String(raw == null ? "" : raw);
   work = work.replace(
+    /@\[([^\]]+)\]\(filum:image\/([a-z0-9-]{8,64})\)/gi,
+    (m, label, id) =>
+      stash(
+        `<button class="thread-reference image-reference" type="button" data-image-ref="${escapeHtml(id)}">@${escapeHtml(label)}</button>`
+      )
+  );
+  work = work.replace(
     /@\[([^\]]+)\]\(filum:thread\/([a-z0-9-]{8,64})\)/gi,
     (m, label, id) =>
       stash(
@@ -2101,96 +2807,124 @@ function inlineMarkup(raw) {
       `<a class="rich-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlText)}</a>`
     );
   });
+  // Abbreviations expand after links and code are set aside, so an address
+  // or a code span is never rewritten.
+  if (abbreviationRegex) work = work.replace(abbreviationRegex, (match) => stash(abbreviationHtml(match)));
 
   let out = escapeHtml(work);
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  out = out.replace(/__([^_]+)__/g, "<u>$1</u>");
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__(.+?)__/g, "<u>$1</u>");
+  out = out.replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, "$1<em>$2</em>");
   return out.replace(/\x00(\d+)\x00/g, (m, i) => tokens[Number(i)]);
 }
 
+// ---- YouTube previews ---------------------------------------------------------
+//
+// A YouTube link alone on its line becomes a small card in place; links
+// inside a sentence stay links, with compact cards gathered after the notes.
+// Thumbnails load lazily without a referrer; nothing plays until clicked, and
+// then from youtube-nocookie.com. (design.md drift log, 2026-11-22.)
+const YOUTUBE_LINK = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?[^\s)]*?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})[^\s)]*/i;
+const MAX_VIDEO_PREVIEWS = 3;
+
+function youtubeInfo(url) {
+  const match = String(url || "").match(YOUTUBE_LINK);
+  if (!match) return null;
+  const time = String(url).match(/[?&#](?:t|start)=(\d+h)?(\d+m)?(\d+)s?/i);
+  const start = time
+    ? (Number.parseInt(time[1], 10) || 0) * 3600 + (Number.parseInt(time[2], 10) || 0) * 60 + (Number.parseInt(time[3], 10) || 0)
+    : 0;
+  return { id: match[1], start };
+}
+
+// The line is only a YouTube link (bare, or [label](url)).
+function standaloneYoutube(line) {
+  const trimmed = String(line || "").trim();
+  const labelled = trimmed.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+  const url = labelled ? labelled[2] : /^\S+$/.test(trimmed) ? trimmed : "";
+  const info = url ? youtubeInfo(url) : null;
+  if (!info || (!labelled && !YOUTUBE_LINK.test(trimmed))) return null;
+  return { ...info, label: labelled ? labelled[1] : "" };
+}
+
+function youtubeCardHtml(video, compact = false) {
+  const label = video.label || "YouTube video";
+  const watch = `https://www.youtube.com/watch?v=${video.id}${video.start ? `&t=${video.start}s` : ""}`;
+  return `<span class="yt-card${compact ? " yt-card--compact" : ""}" data-yt="${escapeHtml(video.id)}">`
+    + `<button class="yt-thumb" type="button" data-yt-play="${escapeHtml(video.id)}" data-yt-start="${video.start || 0}"`
+    + ` aria-label="Play video: ${escapeHtml(label)}">`
+    + `<img src="https://i.ytimg.com/vi/${escapeHtml(video.id)}/mqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+    + `<span class="yt-play" aria-hidden="true"></span></button>`
+    + `<span class="yt-meta"><span class="yt-title">${expandHtml(label)}</span>`
+    + `<a class="rich-link yt-open" href="${escapeHtml(watch)}" target="_blank" rel="noopener noreferrer">Open on YouTube ↗</a></span>`
+    + `</span>`;
+}
+
+// Inline YouTube links that did not get a card of their own.
+function inlineYoutubeVideos(notes, alreadyShown) {
+  const videos = [];
+  const seen = new Set(alreadyShown);
+  for (const line of String(notes || "").split("\n")) {
+    if (standaloneYoutube(line)) continue;
+    const pattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(?:https?:\/\/|www\.)[^\s<)]+/gi;
+    let match;
+    while ((match = pattern.exec(line))) {
+      const info = youtubeInfo(match[2] || match[0]);
+      if (!info || seen.has(info.id)) continue;
+      seen.add(info.id);
+      videos.push({ ...info, label: match[1] || "" });
+    }
+  }
+  return videos;
+}
+
+function playYoutube(button) {
+  const id = button.dataset.ytPlay;
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id || "")) return;
+  const start = Number.parseInt(button.dataset.ytStart, 10) || 0;
+  const frame = document.createElement("iframe");
+  frame.className = "yt-frame";
+  frame.src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0${start ? `&start=${start}` : ""}`;
+  frame.title = button.getAttribute("aria-label") || "YouTube video";
+  frame.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+  frame.referrerPolicy = "strict-origin-when-cross-origin";
+  frame.allowFullscreen = true;
+  button.closest(".yt-card")?.classList.add("is-playing");
+  button.replaceWith(frame);
+}
+
 function renderNoteLine(line) {
+  const video = standaloneYoutube(line);
+  if (video) {
+    renderNoteLine.shown?.add(video.id);
+    return youtubeCardHtml(video);
+  }
   const html = inlineMarkup(line);
   return noteLabelRegex && noteLabelRegex.test(line)
     ? `<span class="note-line">${html}</span>`
     : html;
 }
 
+// The block structure (paragraphs, nested lists, numbering, code) comes from
+// the same parser the editor uses, so what reads here is exactly what was
+// written there; only the inline pass is the read view's own.
 function renderRichNotes(notes) {
   const raw = String(notes == null ? "" : notes).replace(/\r\n/g, "\n");
-  const lines = raw.split("\n");
-  const blocks = [];
-  let plainRun = [];
-  let listRun = [];
-  let orderedRun = [];
-  let fenceRun = null;
-
-  const flushPlain = () => {
-    if (plainRun.length) {
-      blocks.push(plainRun.map(renderNoteLine).join("<br />"));
-      plainRun = [];
-    }
-  };
-  const flushList = () => {
-    if (listRun.length) {
-      blocks.push(
-        `<ul class="note-list">${listRun.map((item) => `<li>${inlineMarkup(item)}</li>`).join("")}</ul>`
-      );
-      listRun = [];
-    }
-  };
-  const flushOrdered = () => {
-    if (orderedRun.length) {
-      blocks.push(
-        `<ol class="note-list">${orderedRun.map((item) => `<li>${inlineMarkup(item)}</li>`).join("")}</ol>`
-      );
-      orderedRun = [];
-    }
-  };
-
-  for (const line of lines) {
-    if (fenceRun) {
-      if (line.trim().startsWith("```")) {
-        blocks.push(`<pre class="note-code">${escapeHtml(fenceRun.join("\n"))}</pre>`);
-        fenceRun = null;
-      } else {
-        fenceRun.push(line);
-      }
-      continue;
-    }
-    if (line.trim().startsWith("```")) {
-      flushPlain();
-      flushList();
-      flushOrdered();
-      fenceRun = [];
-      continue;
-    }
-    const listMatch = line.match(/^\s*-\s+(.*)$/);
-    const orderedMatch = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (listMatch) {
-      flushPlain();
-      flushOrdered();
-      listRun.push(listMatch[1]);
-      continue;
-    }
-    if (orderedMatch) {
-      flushPlain();
-      flushList();
-      orderedRun.push(orderedMatch[1]);
-      continue;
-    }
-    flushList();
-    flushOrdered();
-    plainRun.push(line);
-  }
-  if (fenceRun) {
-    // Unclosed fence: render what is there rather than losing it.
-    blocks.push(`<pre class="note-code">${escapeHtml(fenceRun.join("\n"))}</pre>`);
-  }
-  flushPlain();
-  flushList();
-  flushOrdered();
-  return blocks.join("");
+  renderNoteLine.shown = new Set();
+  const body = window.FilumRichText?.markdownToHtml
+    ? window.FilumRichText.markdownToHtml(raw, {
+        inline: renderNoteLine,
+        listClass: "note-list",
+        preClass: "note-code",
+        paragraphClass: "note-paragraph",
+      })
+    : raw.split("\n").map(renderNoteLine).join("<br />");
+  const room = Math.max(0, MAX_VIDEO_PREVIEWS - renderNoteLine.shown.size);
+  const extra = room ? inlineYoutubeVideos(raw, renderNoteLine.shown).slice(0, room) : [];
+  renderNoteLine.shown = null;
+  return extra.length
+    ? `${body}<div class="yt-strip">${extra.map((video) => youtubeCardHtml(video, true)).join("")}</div>`
+    : body;
 }
 
 function renderThumbStrip(images) {
@@ -2231,7 +2965,9 @@ function renderEditableTray(container, images, onRemove) {
   });
 }
 
-// Read-only tray (focus card): thumbnails that open full size in a new tab.
+// Read-only tray (focus card): thumbnails that open full size in place.
+// Images live inside the thread JSON as data: URLs, and Chrome refuses to
+// open a data: URL in a new tab — so the viewer is part of the page.
 function renderReadonlyTray(container, images) {
   if (!container) return;
   if (!Array.isArray(images) || !images.length) {
@@ -2243,18 +2979,19 @@ function renderReadonlyTray(container, images) {
   container.innerHTML = images
     .map(
       (img) => `
-        <a class="attachment-link" href="${escapeHtml(img.src)}" target="_blank" rel="noopener noreferrer">
+        <button class="attachment-link" type="button" data-view-image="${escapeHtml(img.id)}"
+                aria-label="View ${escapeHtml(img.alt || "reference image")}">
           <img class="thumb thumb--lg" src="${escapeHtml(img.src)}" alt="${escapeHtml(
             img.alt || "reference image"
           )}" loading="lazy" />
-        </a>`
+        </button>`
     )
     .join("");
 }
 
 // Step 3 card subtitle: the start of the notes, or a quiet placeholder.
 function lineCardSubtitle(task) {
-  if (task.notes && task.notes.trim()) return truncate(task.notes, 70);
+  if (task.notes && task.notes.trim()) return truncate(plainNotes(task.notes), 70);
   return "No details yet";
 }
 
@@ -2485,6 +3222,7 @@ function bindInlineEditor() {
   if (notes) {
     inlineNotesEditor = bindMarkShortcuts(notes, {
       onPaste: (event) => handleImagePaste(event, editingImages, renderTray),
+      images: () => editingImages,
     });
   }
 
@@ -2502,17 +3240,129 @@ function bindInlineEditor() {
   });
 }
 
+// options.images: a getter for the images attached to the task being
+// written, so "@" can reference them alongside threads. Only this task's own
+// images are offered.
 function bindMarkShortcuts(textarea, options = {}) {
   if (!window.FilumRichText) return null;
+  const { images, ...rest } = options;
+  const imageList = () => (typeof images === "function" ? images() || [] : []);
   return window.FilumRichText.enhance(textarea, {
     toolbarPosition: "bottom",
-    mentionProvider: (query) =>
-      threadList
+    mentionProvider: (query) => {
+      const pictures = imageList()
+        .map((img, index) => ({
+          id: img.id,
+          name: imageLabel(img, index),
+          kind: "image",
+          thumb: img.src,
+          group: "Images in this task",
+        }))
+        .filter((item) => !query || item.name.toLowerCase().includes(query));
+      const threads = threadList
         .filter((thread) => !query || (thread.name || "Untitled thread").toLowerCase().includes(query))
-        .map((thread) => ({ id: thread.id, name: thread.name || "Untitled thread" })),
+        .map((thread) => ({
+          id: thread.id,
+          name: thread.name || "Untitled thread",
+          kind: "thread",
+          group: pictures.length ? "Threads" : undefined,
+        }));
+      return [...pictures, ...threads];
+    },
     onThreadReference: (id) => navigateToReferencedThread(id),
-    ...options,
+    onImageReference: (id) => {
+      const list = imageList();
+      if (list.some((img) => img.id === id)) openImageViewer(list, id);
+    },
+    ...rest,
   });
+}
+
+function imageLabel(img, index) {
+  return img.alt ? truncate(img.alt, 24) : `Image ${index + 1}`;
+}
+
+// ---- Image viewer ------------------------------------------------------------
+//
+// A quiet in-page view of one attached image: cream veil, the image, nothing
+// else. Escape, a click outside, or the close control returns. With several
+// images, ← and → step between them.
+let imageViewer = null;
+
+function openImageViewer(images, startId) {
+  const list = (images || []).filter((img) => img && typeof img.src === "string" && img.src);
+  if (!list.length) return;
+  let index = Math.max(0, list.findIndex((img) => img.id === startId));
+  const restore = document.activeElement;
+  closeImageViewer(false);
+  const overlay = document.createElement("div");
+  overlay.className = "image-viewer";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.innerHTML = `
+    <figure class="image-viewer-figure">
+      <img class="image-viewer-img" alt="" />
+      <figcaption class="image-viewer-caption"></figcaption>
+    </figure>
+    <div class="image-viewer-controls">
+      <button class="ghost-button mini-edit" type="button" data-viewer-prev ${list.length > 1 ? "" : "hidden"} aria-label="Previous image">←</button>
+      <button class="ghost-button mini-edit" type="button" data-viewer-close>Close</button>
+      <button class="ghost-button mini-edit" type="button" data-viewer-next ${list.length > 1 ? "" : "hidden"} aria-label="Next image">→</button>
+    </div>`;
+  const show = () => {
+    const img = list[index];
+    overlay.querySelector(".image-viewer-img").src = img.src;
+    overlay.querySelector(".image-viewer-img").alt = img.alt || imageLabel(img, index);
+    overlay.querySelector(".image-viewer-caption").textContent =
+      list.length > 1 ? `${imageLabel(img, index)} · ${index + 1} of ${list.length}` : imageLabel(img, index);
+    overlay.setAttribute("aria-label", imageLabel(img, index));
+  };
+  const step = (delta) => {
+    index = (index + delta + list.length) % list.length;
+    show();
+  };
+  overlay.addEventListener("click", (event) => {
+    if (event.target.closest("[data-viewer-prev]")) return step(-1);
+    if (event.target.closest("[data-viewer-next]")) return step(1);
+    if (event.target.closest("[data-viewer-close]") || !event.target.closest(".image-viewer-img")) closeImageViewer(true);
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeImageViewer(true);
+    } else if (event.key === "ArrowRight" && list.length > 1) step(1);
+    else if (event.key === "ArrowLeft" && list.length > 1) step(-1);
+    else if (event.key === "Tab") {
+      // Keep focus inside the viewer while it is open.
+      const controls = [...overlay.querySelectorAll("button:not([hidden])")];
+      const at = controls.indexOf(document.activeElement);
+      event.preventDefault();
+      controls[(at + (event.shiftKey ? -1 : 1) + controls.length) % controls.length]?.focus();
+    }
+  });
+  imageViewer = { overlay, restore };
+  show();
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("is-open"));
+  overlay.querySelector("[data-viewer-close]").focus({ preventScroll: true });
+}
+
+function closeImageViewer(restoreFocus) {
+  if (!imageViewer) return;
+  const { overlay, restore } = imageViewer;
+  imageViewer = null;
+  overlay.remove();
+  if (restoreFocus && restore && typeof restore.focus === "function" && restore.isConnected) {
+    restore.focus({ preventScroll: true });
+  }
+}
+
+function imagesForReference(imageId) {
+  const focused = state.tasks[state.focusIndex];
+  if (focused && focused.images.some((img) => img.id === imageId)) return focused.images;
+  const owner = state.tasks.find((task) => task.images.some((img) => img.id === imageId));
+  return owner ? owner.images : null;
 }
 
 // ---- Find within the thread -------------------------------------------------
@@ -2816,7 +3666,31 @@ function defaultSettings() {
     noteColor: NOTE_SHADES[0],
     keyboardAssistedNavigation: true,
     gitVersioningEnabled: false,
+    abbreviations: [],
   };
+}
+
+// Personal abbreviations: written short, read in full. Shared shape with
+// server.js sanitizeSettings — keep the two rules in step.
+const ABBREVIATION_SHORT = /^[\p{L}\p{N}][\p{L}\p{N}'._-]{0,15}$/u;
+const MAX_ABBREVIATIONS = 50;
+
+function normalizeAbbreviations(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const short = typeof item.short === "string" ? item.short.trim() : "";
+    const full = typeof item.full === "string" ? item.full.replace(/\s+/g, " ").trim() : "";
+    if (!ABBREVIATION_SHORT.test(short) || !full || full.length > 120) continue;
+    const key = short.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ short, full });
+    if (out.length >= MAX_ABBREVIATIONS) break;
+  }
+  return out;
 }
 
 function normalizeSettings(raw) {
@@ -2851,6 +3725,7 @@ function normalizeSettings(raw) {
   if (typeof raw.gitVersioningEnabled === "boolean") {
     base.gitVersioningEnabled = raw.gitVersioningEnabled;
   }
+  base.abbreviations = normalizeAbbreviations(raw.abbreviations);
   return base;
 }
 
@@ -2874,6 +3749,54 @@ function applySettings() {
   root.style.setProperty("--note-label", appSettings.noteColor);
   const aliases = appSettings.noteAliases.map(escapeRegex).filter(Boolean);
   noteLabelRegex = aliases.length ? new RegExp(`^\\s*(?:${aliases.join("|")})\\s*:`, "i") : null;
+  buildAbbreviationIndex();
+}
+
+// ---- Abbreviations (read views only) ----------------------------------------
+//
+// "aca" written anywhere reads as "also called as" wherever Filum shows text
+// for reading. Editors always keep exactly what was typed. Matches are whole
+// words, case-insensitive; the original stays available as the <abbr> title.
+let abbreviationRegex = null;
+let abbreviationMap = new Map();
+
+function buildAbbreviationIndex() {
+  const list = Array.isArray(appSettings.abbreviations) ? appSettings.abbreviations : [];
+  abbreviationMap = new Map(list.map((item) => [item.short.toLowerCase(), item]));
+  const alternatives = list
+    .map((item) => item.short)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegex);
+  abbreviationRegex = alternatives.length
+    ? new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}_])`, "giu")
+    : null;
+}
+
+function expandPlain(text) {
+  const raw = String(text == null ? "" : text);
+  if (!abbreviationRegex) return raw;
+  return raw.replace(abbreviationRegex, (match) => abbreviationMap.get(match.toLowerCase())?.full || match);
+}
+
+function abbreviationHtml(match) {
+  const item = abbreviationMap.get(match.toLowerCase());
+  if (!item) return escapeHtml(match);
+  return `<abbr class="abbr-expanded" title="${escapeHtml(match)}">${escapeHtml(item.full)}</abbr>`;
+}
+
+// Escape for HTML, expanding abbreviations into quiet <abbr> elements.
+function expandHtml(text) {
+  const raw = String(text == null ? "" : text);
+  if (!abbreviationRegex) return escapeHtml(raw);
+  let out = "";
+  let last = 0;
+  abbreviationRegex.lastIndex = 0;
+  let match;
+  while ((match = abbreviationRegex.exec(raw)) !== null) {
+    out += escapeHtml(raw.slice(last, match.index)) + abbreviationHtml(match[0]);
+    last = match.index + match[0].length;
+  }
+  return out + escapeHtml(raw.slice(last));
 }
 
 async function persistSettings({ renderApp = true } = {}) {
@@ -2972,9 +3895,89 @@ function renderPrefsPanel() {
         <small class="field-hint">${shortcutHelpText()}</small>
       </div>
     </section>
+    <section class="prefs-section prefs-abbreviations" aria-labelledby="prefsAbbrTitle">
+      <h3 id="prefsAbbrTitle" class="prefs-section-title">Abbreviations</h3>
+      <ul id="prefsAbbrList" class="abbr-list"></ul>
+      <div class="abbr-add">
+        <input id="prefsAbbrShort" type="text" maxlength="16" autocomplete="off" spellcheck="false"
+               placeholder="aca" aria-label="Abbreviation">
+        <input id="prefsAbbrFull" type="text" maxlength="120" autocomplete="off"
+               placeholder="also called as" aria-label="Reads as">
+        <button id="prefsAbbrAdd" class="ghost-button mini-edit" type="button">Add</button>
+      </div>
+      <small class="field-hint">Written short anywhere, read in full. Editors keep what you typed.</small>
+    </section>
     <button id="openPersonaliseButton" class="personalise-button" type="button">Personalise for me</button>`;
   bindPrefsPanel(elements.prefsPanel);
+  bindAbbreviationPrefs(elements.prefsPanel);
   elements.prefsPanel.querySelector("#openPersonaliseButton")?.addEventListener("click", openPersonalisePage);
+}
+
+function renderAbbreviationList(root) {
+  const list = root.querySelector("#prefsAbbrList");
+  if (!list) return;
+  const items = appSettings.abbreviations || [];
+  list.hidden = !items.length;
+  list.innerHTML = items
+    .map(
+      (item) => `
+        <li class="abbr-row">
+          <span class="abbr-short">${escapeHtml(item.short)}</span>
+          <span class="abbr-full">${escapeHtml(item.full)}</span>
+          <button class="abbr-remove" type="button" data-abbr-remove="${escapeHtml(item.short)}"
+                  aria-label="Remove ${escapeHtml(item.short)}">×</button>
+        </li>`
+    )
+    .join("");
+}
+
+function bindAbbreviationPrefs(root) {
+  const shortInput = root.querySelector("#prefsAbbrShort");
+  const fullInput = root.querySelector("#prefsAbbrFull");
+  const addButton = root.querySelector("#prefsAbbrAdd");
+  if (!shortInput || !fullInput || !addButton) return;
+  renderAbbreviationList(root);
+  const add = () => {
+    const short = shortInput.value.trim();
+    const full = fullInput.value.replace(/\s+/g, " ").trim();
+    if (!ABBREVIATION_SHORT.test(short)) {
+      shortInput.focus();
+      return;
+    }
+    if (!full) {
+      fullInput.focus();
+      return;
+    }
+    const others = (appSettings.abbreviations || []).filter((item) => item.short.toLowerCase() !== short.toLowerCase());
+    if (others.length >= MAX_ABBREVIATIONS) {
+      setStatus(`Up to ${MAX_ABBREVIATIONS} abbreviations`);
+      return;
+    }
+    appSettings.abbreviations = [...others, { short, full }];
+    shortInput.value = "";
+    fullInput.value = "";
+    renderAbbreviationList(root);
+    persistSettings();
+    shortInput.focus();
+  };
+  addButton.addEventListener("click", add);
+  [shortInput, fullInput].forEach((input) =>
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (input === shortInput && !fullInput.value.trim()) fullInput.focus();
+      else add();
+    })
+  );
+  root.querySelector("#prefsAbbrList")?.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-abbr-remove]");
+    if (!remove) return;
+    const key = remove.dataset.abbrRemove.toLowerCase();
+    appSettings.abbreviations = (appSettings.abbreviations || []).filter((item) => item.short.toLowerCase() !== key);
+    renderAbbreviationList(root);
+    persistSettings();
+    shortInput.focus();
+  });
 }
 
 function shortcutHelpText() {
